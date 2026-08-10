@@ -1,0 +1,110 @@
+# CollectorMonitor for Coralogix OpenTelemetry Collectors
+# 
+# This file creates two CollectorMonitor resources:
+# 1. agent-monitor: watches the DaemonSet (node-level agents)
+# 2. collector-monitor: watches the Deployment (cluster receiver/gateway)
+#
+# Updated with actual labels from CollectorCtrl-EKS cluster.
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: collectorctrl-auth
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: collectorctrl
+type: Opaque
+stringData:
+  secret-key: "REPLACE-WITH-YOUR-SHARED-SECRET"
+
+---
+# 1. Monitor the DaemonSet agents (runs on every node)
+apiVersion: collectorctrl.io/v1alpha1
+kind: CollectorMonitor
+metadata:
+  name: coralogix-agent
+  namespace: observability
+  labels:
+    k8s.cluster.name: "CollectorCtrl-EKS"
+    app.kubernetes.io/part-of: collectorctrl
+spec:
+  workloadSelector:
+    matchLabels:
+      app.kubernetes.io/instance: otel-coralogix-integration
+      app.kubernetes.io/name: opentelemetry-agent
+      component: agent-collector
+    kind: DaemonSet
+
+  configMapSelector:
+    # TODO: Verify this ConfigMap name exists in your cluster
+    # Run: kubectl get configmap -n observability | grep agent
+    name: coralogix-opentelemetry-agent
+    key: relay.yaml
+
+  opampServer: "wss://172.31.30.24:4320/v1/opamp"
+
+  auth:
+    secretRef:
+      name: collectorctrl-auth
+      namespace: observability
+      key: secret-key
+
+  healthCheck:
+    enabled: true
+    interval: 30s
+    metricsPort: 8888
+
+  driftDetection:
+    enabled: true
+    interval: 60s
+
+  emergencyMode:
+    enabled: true
+
+  enrichWithNodeMetadata: true
+
+---
+# 2. Monitor the Deployment collector (cluster receiver / gateway)
+# TODO: Update matchLabels after getting Deployment labels:
+#   kubectl get deployment -n observability -o jsonpath='{.items[*].spec.selector.matchLabels}'
+apiVersion: collectorctrl.io/v1alpha1
+kind: CollectorMonitor
+metadata:
+  name: coralogix-collector
+  namespace: observability
+  labels:
+    k8s.cluster.name: "CollectorCtrl-EKS"
+    app.kubernetes.io/part-of: collectorctrl
+spec:
+  workloadSelector:
+    matchLabels:
+      app.kubernetes.io/name: coralogix-opentelemetry-collector
+      app.kubernetes.io/component: otel-collector
+    kind: Deployment
+
+  configMapSelector:
+    name: coralogix-opentelemetry-collector
+    key: relay.yaml
+
+  opampServer: "wss://172.31.30.24:4320/v1/opamp"
+
+  auth:
+    secretRef:
+      name: collectorctrl-auth
+      namespace: observability
+      key: secret-key
+
+  healthCheck:
+    enabled: true
+    interval: 30s
+    metricsPort: 8888
+
+  driftDetection:
+    enabled: true
+    interval: 60s
+
+  emergencyMode:
+    enabled: true
+
+  enrichWithNodeMetadata: true

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: collectorctrl
+  labels:
+    app.kubernetes.io/name: collectorctrl-operator
+    app.kubernetes.io/managed-by: kubectl

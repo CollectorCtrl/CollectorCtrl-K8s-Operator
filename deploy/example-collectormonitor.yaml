@@ -1,0 +1,56 @@
+# Example CollectorMonitor that watches a Splunk OpenTelemetry Collector DaemonSet
+# Adjust the namespace, labels, and ConfigMap to match your actual collector deployment.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: collectorctrl-auth
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: collectorctrl
+stringData:
+  secret-key: "change-me-to-your-shared-secret"
+---
+apiVersion: collectorctrl.io/v1alpha1
+kind: CollectorMonitor
+metadata:
+  name: splunk-otel-collector
+  namespace: observability
+  labels:
+    k8s.cluster.name: "dev-cluster"
+    app.kubernetes.io/part-of: collectorctrl
+spec:
+  # Match the Splunk OTel Collector DaemonSet
+  workloadSelector:
+    matchLabels:
+      app.kubernetes.io/name: splunk-otel-collector
+      app.kubernetes.io/component: otel-collector
+    kind: DaemonSet
+
+  # The ConfigMap holding the collector config
+  configMapSelector:
+    name: splunk-otel-collector-otel-k8s-cluster-receiver
+    key: relay.yaml
+
+  # CollectorCtrl Server endpoint
+  opampServer: "wss://collectorctrl.corp.internal:4320/v1/opamp"
+
+  auth:
+    secretRef:
+      name: collectorctrl-auth
+      namespace: observability
+      key: secret-key
+
+  healthCheck:
+    enabled: true
+    interval: 30s
+    metricsPort: 8888
+
+  driftDetection:
+    enabled: true
+    interval: 60s
+
+  emergencyMode:
+    enabled: true
+
+  enrichWithNodeMetadata: true

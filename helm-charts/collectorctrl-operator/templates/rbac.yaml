@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "collectorctrl-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- if .Values.rbac.clusterScoped }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+rules:
+  # Core workloads
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # ConfigMaps (write for emergency mode)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Secrets (read for OpAMP authentication)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  # Pods and exec
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # Nodes (for metadata enrichment)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # CRD management
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["collectormonitors"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["collectormonitors/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["collectormonitors/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "collectorctrl-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "collectorctrl-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["collectormonitors"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["collectormonitors/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["collectormonitors/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "collectorctrl-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "collectorctrl-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

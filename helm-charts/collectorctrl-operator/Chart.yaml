@@ -1,0 +1,21 @@
+apiVersion: v2
+name: collectorctrl-operator
+description: CollectorCtrl Kubernetes Operator for unified fleet management of OpenTelemetry Collectors
+type: application
+version: 0.1.0
+appVersion: "v1.0.0"
+home: https://collectorctrl.com
+sources:
+  - https://github.com/collectorctrl/collectorctrl
+maintainers:
+  - name: CollectorCtrl Team
+    email: engineering@collectorctrl.com
+keywords:
+  - opentelemetry
+  - collector
+  - opamp
+  - observability
+  - fleet-management
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/prerelease: "true"

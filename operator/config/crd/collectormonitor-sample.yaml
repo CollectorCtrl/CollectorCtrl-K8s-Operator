@@ -1,0 +1,44 @@
+apiVersion: collectorctrl.io/v1alpha1
+kind: CollectorMonitor
+metadata:
+  name: otel-daemonset-monitor
+  namespace: observability
+spec:
+  # Discover the collector workload by label
+  workloadSelector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetry-collector
+    kind: DaemonSet
+
+  # Auto-discover the ConfigMap (optional — operator will find it from pod template)
+  # configMapSelector:
+  #   matchLabels:
+  #     app.kubernetes.io/name: opentelemetry-collector
+  #   key: relay.yaml
+
+  # CollectorCtrl Server endpoint
+  opampServer: wss://collectorctrl.corp.internal:4320/v1/opamp
+
+  # Authentication
+  auth:
+    secretRef:
+      name: collectorctrl-credentials
+      key: secret-key
+
+  # Health monitoring
+  healthCheck:
+    enabled: true
+    interval: 30s
+    metricsPort: 8888
+
+  # Drift detection
+  driftDetection:
+    enabled: true
+    interval: 60s
+
+  # Emergency override capability
+  emergencyMode:
+    enabled: true
+
+  # Enrich OpAMP labels with node metadata
+  enrichWithNodeMetadata: true

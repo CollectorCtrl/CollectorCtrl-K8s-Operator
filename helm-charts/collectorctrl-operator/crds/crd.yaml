@@ -1,0 +1,165 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: collectormonitors.collectorctrl.io
+spec:
+  group: collectorctrl.io
+  names:
+    kind: CollectorMonitor
+    listKind: CollectorMonitorList
+    plural: collectormonitors
+    singular: collectormonitor
+    shortNames:
+      - cmo
+      - cmos
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - workloadSelector
+                - opampServer
+              properties:
+                workloadSelector:
+                  type: object
+                  required:
+                    - matchLabels
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    kind:
+                      type: string
+                      enum:
+                        - DaemonSet
+                        - Deployment
+                        - StatefulSet
+                    name:
+                      type: string
+                configMapSelector:
+                  type: object
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    name:
+                      type: string
+                    key:
+                      type: string
+                      default: "config.yaml"
+                opampServer:
+                  type: string
+                  pattern: '^wss?://.*$'
+                auth:
+                  type: object
+                  properties:
+                    secretRef:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        key:
+                          type: string
+                          default: "secret-key"
+                healthCheck:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    interval:
+                      type: string
+                      default: "30s"
+                    metricsPort:
+                      type: integer
+                      default: 8888
+                driftDetection:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    interval:
+                      type: string
+                      default: "60s"
+                emergencyMode:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                enrichWithNodeMetadata:
+                  type: boolean
+                  default: true
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Active
+                    - Error
+                    - Disconnected
+                lastHeartbeat:
+                  type: string
+                  format: date-time
+                agentCount:
+                  type: integer
+                healthyAgents:
+                  type: integer
+                configMapRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    key:
+                      type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      enum:
+                        - "True"
+                        - "False"
+                        - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Agents
+          type: integer
+          jsonPath: .status.agentCount
+        - name: Healthy
+          type: integer
+          jsonPath: .status.healthyAgents
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
