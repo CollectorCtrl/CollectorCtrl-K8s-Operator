@@ -12,6 +12,13 @@ import (
 
 // CollectorMonitorSpec defines the desired state of CollectorMonitor.
 type CollectorMonitorSpec struct {
+	// CollectorContainer is required for multi-container pods, including sidecars.
+	// +optional
+	CollectorContainer string `json:"collectorContainer,omitempty"`
+	// ReportConfig uploads ConfigMap YAML to CollectorCtrl. Opt in only after reviewing secrets.
+	// +optional
+	// +kubebuilder:default=false
+	ReportConfig bool `json:"reportConfig,omitempty"`
 	// WorkloadSelector identifies the collector workload (DaemonSet, Deployment, StatefulSet)
 	// that this monitor should watch and manage.
 	// +kubebuilder:validation:Required
@@ -26,7 +33,7 @@ type CollectorMonitorSpec struct {
 	// OpAMPServer is the WebSocket endpoint of the CollectorCtrl management server.
 	// Example: wss://collectorctrl.corp.internal:4320/v1/opamp
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^wss?://.*$`
+	// +kubebuilder:validation:Pattern=`^wss://.*$`
 	OpAMPServer string `json:"opampServer"`
 
 	// Auth configures how the Operator authenticates to the CollectorCtrl Server.
@@ -38,15 +45,15 @@ type CollectorMonitorSpec struct {
 	// +kubebuilder:default={enabled:true,interval:"30s",metricsPort:8888}
 	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
 
-	// DriftDetection enables comparison of effective runtime config vs. ConfigMap content.
+	// DriftDetection is reserved for future runtime evidence. Observation mode reports runtime verification as Unknown.
 	// +optional
 	// +kubebuilder:default={enabled:true,interval:"60s"}
 	DriftDetection DriftDetectionConfig `json:"driftDetection,omitempty"`
 
 	// EmergencyMode allows the Operator to accept direct config patches from the server
-	// for incident response. When disabled, the Operator is read-only.
+	// for incident response. Deprecated: this observation release always rejects control commands.
 	// +optional
-	// +kubebuilder:default={enabled:true}
+	// +kubebuilder:default={enabled:false}
 	EmergencyMode EmergencyModeConfig `json:"emergencyMode,omitempty"`
 
 	// EnrichWithNodeMetadata adds node labels/annotations as OpAMP agent labels.
@@ -68,7 +75,7 @@ type WorkloadSelector struct {
 	Kind string `json:"kind,omitempty"`
 
 	// Name, if set, matches a specific workload by name.
-	// If omitted, all workloads matching MatchLabels and Kind are monitored.
+	// If omitted, the selector must match exactly one workload.
 	// +optional
 	Name string `json:"name,omitempty"`
 }
@@ -85,7 +92,6 @@ type ConfigMapSelector struct {
 
 	// Key is the data key within the ConfigMap (e.g., "relay.yaml", "config.yaml").
 	// +optional
-	// +kubebuilder:default="config.yaml"
 	Key string `json:"key,omitempty"`
 }
 
@@ -148,9 +154,9 @@ type DriftDetectionConfig struct {
 
 // EmergencyModeConfig controls whether the Operator can apply emergency overrides.
 type EmergencyModeConfig struct {
-	// Enabled allows the Operator to patch ConfigMaps directly when requested by the server.
+	// Enabled is deprecated. Emergency control is unsupported in this observation release.
 	// +optional
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
@@ -160,7 +166,7 @@ type CollectorMonitorStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Active;Error;Disconnected
 	Phase string `json:"phase,omitempty"`
 
-	// LastHeartbeat is when the Operator last reported to the server.
+	// LastHeartbeat is the last observation queued while the OpAMP transport was connected.
 	// +optional
 	LastHeartbeat *metav1.Time `json:"lastHeartbeat,omitempty"`
 
@@ -210,7 +216,53 @@ func (in *CollectorMonitor) DeepCopyInto(out *CollectorMonitor) {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = in.Spec
+	if in.Spec.WorkloadSelector.MatchLabels != nil {
+		out.Spec.WorkloadSelector.MatchLabels = make(map[string]string, len(in.Spec.WorkloadSelector.MatchLabels))
+		for k, v := range in.Spec.WorkloadSelector.MatchLabels {
+			out.Spec.WorkloadSelector.MatchLabels[k] = v
+		}
+	}
+	if in.Spec.ConfigMapSelector != nil {
+		v := *in.Spec.ConfigMapSelector
+		if v.MatchLabels != nil {
+			v.MatchLabels = make(map[string]string, len(in.Spec.ConfigMapSelector.MatchLabels))
+			for k, value := range in.Spec.ConfigMapSelector.MatchLabels {
+				v.MatchLabels[k] = value
+			}
+		}
+		out.Spec.ConfigMapSelector = &v
+	}
+	if in.Spec.Auth.SecretRef != nil {
+		v := *in.Spec.Auth.SecretRef
+		out.Spec.Auth.SecretRef = &v
+	}
+	if in.Spec.HealthCheck.Enabled != nil {
+		v := *in.Spec.HealthCheck.Enabled
+		out.Spec.HealthCheck.Enabled = &v
+	}
+	if in.Spec.DriftDetection.Enabled != nil {
+		v := *in.Spec.DriftDetection.Enabled
+		out.Spec.DriftDetection.Enabled = &v
+	}
+	if in.Spec.EmergencyMode.Enabled != nil {
+		v := *in.Spec.EmergencyMode.Enabled
+		out.Spec.EmergencyMode.Enabled = &v
+	}
+	if in.Spec.EnrichWithNodeMetadata != nil {
+		v := *in.Spec.EnrichWithNodeMetadata
+		out.Spec.EnrichWithNodeMetadata = &v
+	}
 	out.Status = in.Status
+	if in.Status.LastHeartbeat != nil {
+		out.Status.LastHeartbeat = in.Status.LastHeartbeat.DeepCopy()
+	}
+	if in.Status.ConfigMapRef != nil {
+		v := *in.Status.ConfigMapRef
+		out.Status.ConfigMapRef = &v
+	}
+	if in.Status.Conditions != nil {
+		out.Status.Conditions = append([]metav1.Condition(nil), in.Status.Conditions...)
+	}
 }
 
 // DeepCopy returns a copy of this CollectorMonitor.

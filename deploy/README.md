@@ -1,3 +1,9 @@
+# Superseded installation instructions
+
+The observation release has different permissions, TLS requirements, and no emergency control. Follow [the current installation guide](../README.md) for this checkout. The material below describes the earlier prototype and is retained for historical context only.
+
+---
+
 # Deploying the CollectorCtrl Operator
 
 > **Prerequisites:** A Kubernetes cluster (v1.25+) and `kubectl` access.  

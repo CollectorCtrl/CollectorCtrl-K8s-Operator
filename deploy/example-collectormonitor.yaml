@@ -51,6 +51,6 @@ spec:
     interval: 60s
 
   emergencyMode:
-    enabled: true
+    enabled: false
 
   enrichWithNodeMetadata: true

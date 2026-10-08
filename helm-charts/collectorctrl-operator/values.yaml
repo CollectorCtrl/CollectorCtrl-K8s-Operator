@@ -27,10 +27,19 @@ opamp:
   # If existingSecret is not set, provide the secret key directly (not recommended for production)
   secretKey: ""
 
-# RBAC scope: true = cluster-wide (can manage collectors in any namespace)
+# RBAC scope: true = observe collectors across namespaces
 # false = namespace-scoped only
 rbac:
   clusterScoped: true
+  # API get access for per-monitor auth.secretRef; empty grants no Secret reads.
+  authSecretNames: []
+
+# Stable unique identity; empty discovers the kube-system namespace UID.
+# Required when rbac.clusterScoped=false.
+clusterID: ""
+
+# Optional trusted CA bundle supplied as an existing ConfigMap (key ca.crt).
+opampCAConfigMap: ""
 
 # Resource limits
 resources:

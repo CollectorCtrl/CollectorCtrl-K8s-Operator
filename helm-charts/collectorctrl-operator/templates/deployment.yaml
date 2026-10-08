@@ -1,3 +1,6 @@
+{{- if and (not .Values.rbac.clusterScoped) (not .Values.clusterID) }}
+{{- fail "clusterID is required for namespace-scoped observation" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +38,16 @@ spec:
             - --leader-elect
             {{- end }}
           env:
+            - name: CLUSTER_ID
+              value: {{ .Values.clusterID | quote }}
+            {{- if not .Values.rbac.clusterScoped }}
+            - name: WATCH_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- end }}
+            {{- if .Values.opampCAConfigMap }}
+            - name: OPAMP_CA_FILE
+              value: /etc/collectorctrl/ca/ca.crt
+            {{- end }}
             - name: OPAMP_SERVER
               value: {{ .Values.opamp.server | quote }}
             {{- if .Values.opamp.existingSecret }}
@@ -47,6 +60,12 @@ spec:
             - name: OPAMP_SECRET_KEY
               value: {{ .Values.opamp.secretKey | quote }}
             {{- end }}
+          {{- if .Values.opampCAConfigMap }}
+          volumeMounts:
+            - name: opamp-ca
+              mountPath: /etc/collectorctrl/ca
+              readOnly: true
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 8080
@@ -60,6 +79,12 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.opampCAConfigMap }}
+      volumes:
+        - name: opamp-ca
+          configMap:
+            name: {{ .Values.opampCAConfigMap }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

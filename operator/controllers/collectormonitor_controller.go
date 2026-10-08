@@ -1,638 +1,537 @@
-// operator/controllers/collectormonitor_controller.go
-// Main controller for CollectorMonitor CRD.
-// Uses controller-runtime. Watches CollectorMonitor, ConfigMaps, and Pods.
-
 package controllers
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	collectorctrlv1alpha1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
+	v1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
 	"github.com/collectorctrl/collectorctrl/pkg/api"
 	"github.com/collectorctrl/collectorctrl/pkg/opamp"
 )
 
-// CollectorMonitorReconciler reconciles a CollectorMonitor object.
+// CollectorMonitorReconciler observes existing workloads. It never writes to them.
 type CollectorMonitorReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Recorder  record.EventRecorder
-	Clientset kubernetes.Interface
-
-	// opampClients holds one OpAMP client per CollectorMonitor CR.
-	opampClients map[string]*opamp.Client
-
-	// opampRunning prevents multiple connections for the same CR.
-	opampMu      sync.Mutex
-	opampStarted map[string]bool
-
-	// DefaultSecretKey is the fallback OpAMP secret key from the environment.
+	Reader           client.Reader
+	Scheme           *runtime.Scheme
 	DefaultSecretKey string
+	DefaultServer    string
+	ClusterID        string
+	TLSConfig        *tls.Config
+	lifetime         context.Context
+	mu               sync.Mutex
+	connections      map[string]*connection
 }
 
-// +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors,verbs=get;list;watch;create;update;patch;delete
+type connection struct {
+	client      *opamp.Client
+	fingerprint [32]byte
+}
+
+// +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=daemonsets;deployments;statefulsets,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
-// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets;deployments;statefulsets;replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps;pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
-// Reconcile is the main control loop.
 func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
-	// 1. Fetch the CollectorMonitor CR
-	monitor := &collectorctrlv1alpha1.CollectorMonitor{}
+	monitor := &v1.CollectorMonitor{}
 	if err := r.Get(ctx, req.NamespacedName, monitor); err != nil {
-		if errors.IsNotFound(err) {
-			// CollectorMonitor deleted — close its OpAMP client if any.
-			r.cleanupOpAMPClient(req.Namespace, req.Name)
+		if apierrors.IsNotFound(err) {
+			r.closeConnection(req.String())
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
-
-	// 2. Discover the workload (DaemonSet, Deployment, or StatefulSet)
-	workload, workloadKind, err := r.discoverWorkload(ctx, monitor)
-	if err != nil {
-		log.Error(err, "Failed to discover workload")
-		r.setCondition(ctx, monitor, "Discovered", false, err.Error())
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	fail := func(condition string, err error) (ctrl.Result, error) {
+		r.closeConnection(req.String())
+		monitor.Status.Phase = "Error"
+		monitor.Status.AgentCount, monitor.Status.HealthyAgents = 0, 0
+		monitor.Status.ConfigMapRef = nil
+		r.condition(monitor, condition, metav1.ConditionFalse, "ObservationFailed", err.Error())
+		r.condition(monitor, "Active", metav1.ConditionFalse, "ObservationFailed", err.Error())
+		r.condition(monitor, "OpAMPConnected", metav1.ConditionFalse, "ObservationFailed", "Observation connection stopped")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, monitor)
 	}
-
-	// 3. Discover the ConfigMap
-	configMap, err := r.discoverConfigMap(ctx, monitor, workload)
-	if err != nil {
-		log.Error(err, "Failed to discover ConfigMap")
-		r.setCondition(ctx, monitor, "ConfigMapResolved", false, err.Error())
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-
-	// 4. Update status with discovered refs
-	monitor.Status.ConfigMapRef = &collectorctrlv1alpha1.ConfigMapReference{
-		Name:      configMap.Name,
-		Namespace: configMap.Namespace,
-		Key:       r.configMapKey(monitor, configMap),
-	}
-
-	// 5. Ensure OpAMP connection (one per CollectorMonitor)
-	if err := r.ensureOpAMPConnection(ctx, monitor, workload, workloadKind); err != nil {
-		log.Error(err, "Failed to establish OpAMP connection")
-		r.setCondition(ctx, monitor, "OpAMPConnected", false, err.Error())
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-
-	// 6. Report current pod list and health (includes per-pod topology)
-	if err := r.reportFleetHealth(ctx, monitor, workload); err != nil {
-		log.Error(err, "Failed to report fleet health")
-	}
-
-	// 7. Drift detection (if enabled)
-	if monitor.Spec.DriftDetection.Enabled != nil && *monitor.Spec.DriftDetection.Enabled {
-		if err := r.detectDrift(ctx, monitor, configMap); err != nil {
-			log.Error(err, "Drift detection failed")
-		}
-	}
-
-	// 8. Update status
-	monitor.Status.Phase = "Active"
-	r.setCondition(ctx, monitor, "Active", true, "Monitoring collector fleet")
-	if err := r.Status().Update(ctx, monitor); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
-}
-
-// discoverWorkload finds the DaemonSet, Deployment, or StatefulSet matching the selector.
-func (r *CollectorMonitorReconciler) discoverWorkload(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor) (client.Object, string, error) {
-	selector := monitor.Spec.WorkloadSelector
-	labelSelector := client.MatchingLabels(selector.MatchLabels)
-
-	// Try DaemonSet first
-	if selector.Kind == "" || selector.Kind == "DaemonSet" {
-		var list appsv1.DaemonSetList
-		if err := r.List(ctx, &list, labelSelector, client.InNamespace(monitor.Namespace)); err != nil {
-			return nil, "", err
-		}
-		for _, ds := range list.Items {
-			if selector.Name == "" || ds.Name == selector.Name {
-				return &ds, "DaemonSet", nil
-			}
-		}
-	}
-
-	// Try Deployment
-	if selector.Kind == "" || selector.Kind == "Deployment" {
-		var list appsv1.DeploymentList
-		if err := r.List(ctx, &list, labelSelector, client.InNamespace(monitor.Namespace)); err != nil {
-			return nil, "", err
-		}
-		for _, dep := range list.Items {
-			if selector.Name == "" || dep.Name == selector.Name {
-				return &dep, "Deployment", nil
-			}
-		}
-	}
-
-	// Try StatefulSet
-	if selector.Kind == "" || selector.Kind == "StatefulSet" {
-		var list appsv1.StatefulSetList
-		if err := r.List(ctx, &list, labelSelector, client.InNamespace(monitor.Namespace)); err != nil {
-			return nil, "", err
-		}
-		for _, sts := range list.Items {
-			if selector.Name == "" || sts.Name == selector.Name {
-				return &sts, "StatefulSet", nil
-			}
-		}
-	}
-
-	return nil, "", fmt.Errorf("no workload found matching selector: %+v", selector)
-}
-
-// discoverConfigMap finds the ConfigMap used by the workload.
-func (r *CollectorMonitorReconciler) discoverConfigMap(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor, workload client.Object) (*corev1.ConfigMap, error) {
-	// If explicitly specified in the spec, use it
-	if monitor.Spec.ConfigMapSelector != nil && monitor.Spec.ConfigMapSelector.Name != "" {
-		var cm corev1.ConfigMap
-		if err := r.Get(ctx, client.ObjectKey{
-			Namespace: monitor.Namespace,
-			Name:      monitor.Spec.ConfigMapSelector.Name,
-		}, &cm); err != nil {
-			return nil, err
-		}
-		return &cm, nil
-	}
-
-	// Auto-discover by examining pod template volumes
-	// This is a simplified version — in production, inspect the workload's
-	// PodTemplateSpec for volumes of type ConfigMap.
-	// ...
-
-	return nil, fmt.Errorf("configMap auto-discovery not yet implemented")
-}
-
-// configMapKey returns the config key from the spec or a default.
-func (r *CollectorMonitorReconciler) configMapKey(monitor *collectorctrlv1alpha1.CollectorMonitor, cm *corev1.ConfigMap) string {
-	if monitor.Spec.ConfigMapSelector != nil && monitor.Spec.ConfigMapSelector.Key != "" {
-		return monitor.Spec.ConfigMapSelector.Key
-	}
-	// Auto-detect: look for common keys
-	for _, key := range []string{"relay.yaml", "config.yaml", "otelcol.yaml"} {
-		if _, ok := cm.Data[key]; ok {
-			return key
-		}
-	}
-	return "config.yaml"
-}
-
-// ensureOpAMPConnection starts the OpAMP client if not already running.
-func (r *CollectorMonitorReconciler) ensureOpAMPConnection(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor, workload client.Object, kind string) error {
-	r.opampMu.Lock()
-	defer r.opampMu.Unlock()
-
-	key := fmt.Sprintf("%s/%s", monitor.Namespace, monitor.Name)
-	if r.opampStarted[key] {
-		return nil
-	}
-
-	// Build cluster-level agent ID
-	clusterName := "unknown"
-	if monitor.Labels != nil {
-		if v, ok := monitor.Labels["k8s.cluster.name"]; ok {
-			clusterName = v
-		}
-	}
-
-	cfg := opamp.ClientConfig{
-		Endpoint:  monitor.Spec.OpAMPServer,
-		AgentID:   fmt.Sprintf("k8s://%s/%s/%s/%s", clusterName, monitor.Namespace, kind, workload.GetName()),
-		AgentType: api.AgentTypeKubernetes,
-		Labels: map[string]string{
-			"k8s.cluster.name":  clusterName,
-			"k8s.namespace":     monitor.Namespace,
-			"k8s.workload.type": kind,
-			"k8s.workload.name": workload.GetName(),
-		},
-		K8sContext: &api.K8sContext{
-			ClusterName:   clusterName,
-			Namespace:     monitor.Namespace,
-			WorkloadType:  kind,
-			WorkloadName:  workload.GetName(),
-			ConfigMapName: monitor.Status.ConfigMapRef.Name,
-			ConfigMapKey:  monitor.Status.ConfigMapRef.Key,
-		},
-	}
-
-	// Load auth from secret
-	if monitor.Spec.Auth.SecretRef != nil {
-		secret := &corev1.Secret{}
-		secretKey := client.ObjectKey{
-			Namespace: monitor.Spec.Auth.SecretRef.Namespace,
-			Name:      monitor.Spec.Auth.SecretRef.Name,
-		}
-		if secretKey.Namespace == "" {
-			secretKey.Namespace = monitor.Namespace
-		}
-		if err := r.Get(ctx, secretKey, secret); err != nil {
-			return fmt.Errorf("failed to load auth secret: %w", err)
-		}
-		keyName := monitor.Spec.Auth.SecretRef.Key
-		if keyName == "" {
-			keyName = "secret-key"
-		}
-		cfg.Headers = map[string]string{
-			"Authorization": fmt.Sprintf("Secret-Key %s", string(secret.Data[keyName])),
-		}
-	} else if r.DefaultSecretKey != "" {
-		cfg.Headers = map[string]string{
-			"Authorization": fmt.Sprintf("Secret-Key %s", r.DefaultSecretKey),
-		}
-	}
-
-	// TODO: For testing with self-signed certs only. Remove in production — use proper CA cert.
-	cfg.TLSConfig = &tls.Config{
-		InsecureSkipVerify: true,
-	}
-
-	client := opamp.NewClient(cfg)
-
-	// Handle config updates from server
-	client.OnConfigUpdate(func(update opamp.ConfigUpdate) {
-		// Standard mode: just report back. GitOps handles deployment.
-		log.FromContext(ctx).Info("Received config update from server", "hash", update.ConfigHash)
-		// TODO: store desired config, compare with current, report mismatch if drift
-	})
-
-	// Handle emergency override
-	client.OnEmergencyCmd(func(cmd opamp.EmergencyCommand) {
-		if monitor.Spec.EmergencyMode.Enabled != nil && !*monitor.Spec.EmergencyMode.Enabled {
-			log.FromContext(ctx).Info("Emergency mode disabled, ignoring command")
-			return
-		}
-		log.FromContext(ctx).Info("Applying emergency config", "reason", cmd.Reason)
-		if err := r.applyEmergencyConfig(ctx, monitor, cmd.ConfigYAML); err != nil {
-			log.FromContext(ctx).Error(err, "Failed to apply emergency config")
-			_ = client.SendEmergencyAck(false, err.Error())
-		} else {
-			_ = client.SendEmergencyAck(true, "")
-		}
-	})
-
-	// Handle logs request
-	client.OnFetchLogs(func(podName string) {
-		log.FromContext(ctx).Info("Received logs request from server", "podName", podName)
-		logs, err := r.getPodLogs(ctx, monitor.Namespace, podName)
-		if err != nil {
-			log.FromContext(ctx).Error(err, "Failed to get pod logs", "podName", podName)
-			_ = client.SendPodLogs(podName, "", false, err.Error())
-		} else {
-			_ = client.SendPodLogs(podName, logs, true, "")
-		}
-	})
-
-	if err := client.Start(ctx); err != nil {
-		return err
-	}
-
-	r.opampClients[key] = client
-	r.opampStarted[key] = true
-	return nil
-}
-
-// applyEmergencyConfig patches the ConfigMap and triggers a rolling restart.
-func (r *CollectorMonitorReconciler) applyEmergencyConfig(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor, configYAML string) error {
-	// 1. Fetch the ConfigMap
-	cm := &corev1.ConfigMap{}
-	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: monitor.Status.ConfigMapRef.Namespace,
-		Name:      monitor.Status.ConfigMapRef.Name,
-	}, cm); err != nil {
-		return fmt.Errorf("get configmap: %w", err)
-	}
-
-	// 2. Update the config content
-	key := monitor.Status.ConfigMapRef.Key
-	cm.Data[key] = configYAML
-
-	// 3. Apply the patch
-	if err := r.Update(ctx, cm); err != nil {
-		return fmt.Errorf("update configmap: %w", err)
-	}
-
-	// 4. Trigger rolling restart by updating workload annotation
 	workload, kind, err := r.discoverWorkload(ctx, monitor)
 	if err != nil {
-		return fmt.Errorf("discover workload for restart: %w", err)
+		return fail("Discovered", err)
 	}
-
-	// Patch the pod template annotation to force rolling restart
-	restartAnnotation := time.Now().Format(time.RFC3339)
-	patch := []byte(fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`, restartAnnotation))
-
-	switch kind {
-	case "DaemonSet":
-		if err := r.Patch(ctx, workload, client.RawPatch(types.StrategicMergePatchType, patch)); err != nil {
-			return fmt.Errorf("patch daemonset: %w", err)
+	r.condition(monitor, "Discovered", metav1.ConditionTrue, "WorkloadResolved", kind+"/"+workload.GetName())
+	container, err := collectorContainer(monitor, workload)
+	if err != nil {
+		return fail("ConfigMapResolved", err)
+	}
+	cm, configKey, err := r.discoverConfig(ctx, monitor, workload, container)
+	if err != nil {
+		return fail("ConfigMapResolved", err)
+	}
+	monitor.Status.ConfigMapRef = &v1.ConfigMapReference{Name: cm.Name, Namespace: cm.Namespace, Key: configKey}
+	r.condition(monitor, "ConfigMapResolved", metav1.ConditionTrue, "MountedConfigResolved", "Observed mounted ConfigMap; runtime activation is unverified")
+	r.condition(monitor, "RuntimeConfigVerified", metav1.ConditionUnknown, "RuntimeEvidenceUnavailable", "ConfigMap contents and pod annotations do not prove the running collector's loaded configuration")
+	r.condition(monitor, "TelemetryDeliveryVerified", metav1.ConditionUnknown, "MetricsUnavailable", "Pod readiness does not prove telemetry delivery")
+	if monitor.Spec.EmergencyMode.Enabled != nil && *monitor.Spec.EmergencyMode.Enabled {
+		r.condition(monitor, "ControlEnabled", metav1.ConditionFalse, "ObservationOnly", "Emergency control is unsupported in this observation release")
+	}
+	c, err := r.ensureConnection(ctx, monitor, workload, kind, container, cm)
+	if err != nil {
+		return fail("OpAMPConnected", err)
+	}
+	pods, err := r.workloadPods(ctx, workload, kind)
+	if err != nil {
+		return fail("HealthReported", err)
+	}
+	observation := opamp.Observation{
+		Source: "kubernetes-api", RuntimeVerified: false, ObservedAt: time.Now().UTC(),
+		Namespace: monitor.Namespace, WorkloadKind: kind, WorkloadName: workload.GetName(),
+		WorkloadUID: string(workload.GetUID()), CollectorContainer: container,
+		ConfigMapName: cm.Name, ConfigMapKey: configKey, ResourceVersion: cm.ResourceVersion,
+		ConfigHash:  fmt.Sprintf("%x", sha256.Sum256([]byte(cm.Data[configKey]))),
+		DesiredPods: desiredPods(workload), Pods: make([]opamp.PodHealth, 0, len(pods)),
+	}
+	if monitor.Spec.ReportConfig {
+		observation.ConfigYAML = cm.Data[configKey]
+	}
+	for _, pod := range pods {
+		p := opamp.PodHealth{Name: pod.Name, Node: pod.Spec.NodeName, Phase: string(pod.Status.Phase)}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == container {
+				p.Ready = status.Ready && pod.DeletionTimestamp == nil
+				p.Restarts = status.RestartCount
+				p.Image = status.Image
+				if status.State.Waiting != nil {
+					p.Reason = status.State.Waiting.Reason
+				}
+				if status.State.Terminated != nil {
+					p.Reason = status.State.Terminated.Reason
+				}
+			}
 		}
-	case "Deployment":
-		if err := r.Patch(ctx, workload, client.RawPatch(types.StrategicMergePatchType, patch)); err != nil {
-			return fmt.Errorf("patch deployment: %w", err)
+		if p.Ready {
+			observation.ReadyPods++
 		}
-	case "StatefulSet":
-		if err := r.Patch(ctx, workload, client.RawPatch(types.StrategicMergePatchType, patch)); err != nil {
-			return fmt.Errorf("patch statefulset: %w", err)
+		observation.Pods = append(observation.Pods, p)
+	}
+	monitor.Status.AgentCount = int32(len(pods))
+	monitor.Status.HealthyAgents = int32(observation.ReadyPods)
+	if err := c.Report(observation); err != nil {
+		return fail("HealthReported", err)
+	}
+	r.condition(monitor, "HealthReported", metav1.ConditionTrue, "ReadinessReported", "Collector container readiness reported; telemetry health remains unknown")
+	connected := c.Connected()
+	monitor.Status.Phase = "Disconnected"
+	r.condition(monitor, "OpAMPConnected", metav1.ConditionFalse, "Connecting", "Waiting for authenticated OpAMP connection")
+	if connected {
+		monitor.Status.Phase = "Active"
+		now := metav1.Now()
+		monitor.Status.LastHeartbeat = &now
+		r.condition(monitor, "OpAMPConnected", metav1.ConditionTrue, "Connected", "OpAMP transport connected; delivery acknowledgement is not tracked")
+	}
+	r.condition(monitor, "Active", metav1.ConditionFalse, "Disconnected", "Observation transport is disconnected")
+	if connected {
+		r.condition(monitor, "Active", metav1.ConditionTrue, "Observing", "Observing existing collector workload without deployment control")
+	}
+	interval := monitor.Spec.HealthCheck.Interval.Duration
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+	return ctrl.Result{RequeueAfter: interval}, r.Status().Update(ctx, monitor)
+}
+
+func (r *CollectorMonitorReconciler) discoverWorkload(ctx context.Context, monitor *v1.CollectorMonitor) (client.Object, string, error) {
+	s := monitor.Spec.WorkloadSelector
+	if len(s.MatchLabels) == 0 && s.Name == "" {
+		return nil, "", fmt.Errorf("provide workload name or non-empty matchLabels")
+	}
+	var objects []client.Object
+	var kinds []string
+	add := func(obj client.Object, kind string) {
+		if s.Name == "" || obj.GetName() == s.Name {
+			objects = append(objects, obj)
+			kinds = append(kinds, kind)
 		}
 	}
+	opts := []client.ListOption{client.InNamespace(monitor.Namespace), client.MatchingLabels(s.MatchLabels)}
+	if s.Kind == "" || s.Kind == "DaemonSet" {
+		var list appsv1.DaemonSetList
+		if err := r.List(ctx, &list, opts...); err != nil {
+			return nil, "", err
+		}
+		for i := range list.Items {
+			add(&list.Items[i], "DaemonSet")
+		}
+	}
+	if s.Kind == "" || s.Kind == "Deployment" {
+		var list appsv1.DeploymentList
+		if err := r.List(ctx, &list, opts...); err != nil {
+			return nil, "", err
+		}
+		for i := range list.Items {
+			add(&list.Items[i], "Deployment")
+		}
+	}
+	if s.Kind == "" || s.Kind == "StatefulSet" {
+		var list appsv1.StatefulSetList
+		if err := r.List(ctx, &list, opts...); err != nil {
+			return nil, "", err
+		}
+		for i := range list.Items {
+			add(&list.Items[i], "StatefulSet")
+		}
+	}
+	if len(objects) != 1 {
+		return nil, "", fmt.Errorf("selector matched %d workloads; use one CollectorMonitor per workload and specify kind/name to resolve ambiguity", len(objects))
+	}
+	return objects[0], kinds[0], nil
+}
 
-	r.Recorder.Eventf(monitor, corev1.EventTypeWarning, "EmergencyConfigApplied",
-		"Emergency config applied to ConfigMap %s/%s. %s rolling restart triggered.",
-		cm.Namespace, cm.Name, kind)
-
+func template(w client.Object) *corev1.PodTemplateSpec {
+	switch w := w.(type) {
+	case *appsv1.DaemonSet:
+		return &w.Spec.Template
+	case *appsv1.Deployment:
+		return &w.Spec.Template
+	case *appsv1.StatefulSet:
+		return &w.Spec.Template
+	}
 	return nil
 }
 
-// reportFleetHealth sends the current pod list, aggregate health, and config to the server.
-func (r *CollectorMonitorReconciler) reportFleetHealth(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor, workload client.Object) error {
-	key := fmt.Sprintf("%s/%s", monitor.Namespace, monitor.Name)
-	r.opampMu.Lock()
-	c := r.opampClients[key]
-	r.opampMu.Unlock()
-	if c == nil {
-		return nil // no connection yet
+func collectorContainer(m *v1.CollectorMonitor, w client.Object) (string, error) {
+	t := template(w)
+	if t == nil {
+		return "", fmt.Errorf("unsupported workload")
 	}
-
-	// Extract pod selector from workload
-	var selector map[string]string
-	switch w := workload.(type) {
-	case *appsv1.DaemonSet:
-		selector = w.Spec.Selector.MatchLabels
-	case *appsv1.Deployment:
-		selector = w.Spec.Selector.MatchLabels
-	case *appsv1.StatefulSet:
-		selector = w.Spec.Selector.MatchLabels
-	}
-
-	// List pods belonging to this workload
-	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.MatchingLabels(selector), client.InNamespace(monitor.Namespace)); err != nil {
-		return err
-	}
-
-	// Build per-pod health
-	podsHealth := make([]opamp.PodHealth, 0, len(podList.Items))
-	ready := 0
-	for _, pod := range podList.Items {
-		isReady := isPodReady(&pod)
-		if isReady {
-			ready++
+	if m.Spec.CollectorContainer != "" {
+		for _, c := range t.Spec.Containers {
+			if c.Name == m.Spec.CollectorContainer {
+				return c.Name, nil
+			}
 		}
-		nodeName := pod.Spec.NodeName
-		podIP := pod.Status.PodIP
-		if podIP == "" {
-			podIP = "Pending"
+		return "", fmt.Errorf("collectorContainer %q does not exist", m.Spec.CollectorContainer)
+	}
+	if len(t.Spec.Containers) == 1 {
+		return t.Spec.Containers[0].Name, nil
+	}
+	return "", fmt.Errorf("multi-container workload requires collectorContainer to identify the collector explicitly")
+}
+
+func (r *CollectorMonitorReconciler) discoverConfig(ctx context.Context, m *v1.CollectorMonitor, w client.Object, container string) (*corev1.ConfigMap, string, error) {
+	t := template(w)
+	mounted := map[string]bool{}
+	mounts := map[string][]corev1.VolumeMount{}
+	for _, c := range t.Spec.Containers {
+		if c.Name == container {
+			for _, mount := range c.VolumeMounts {
+				mounted[mount.Name] = true
+				mounts[mount.Name] = append(mounts[mount.Name], mount)
+			}
 		}
-		podsHealth = append(podsHealth, opamp.PodHealth{
-			Name:  pod.Name,
-			Node:  nodeName,
-			IP:    podIP,
-			Ready: isReady,
-			Phase: string(pod.Status.Phase),
-		})
 	}
-
-	// Determine aggregate health
-	var health api.HealthStatus
-	total := len(podList.Items)
-	switch {
-	case total == 0:
-		health = api.HealthUnknown
-	case ready == total:
-		health = api.HealthHealthy
-	case ready > 0:
-		health = api.HealthDegraded
-	default:
-		health = api.HealthUnhealthy
-	}
-
-	// Report health with per-pod topology
-	if err := c.SetHealth(health, podsHealth); err != nil {
-		return fmt.Errorf("set health: %w", err)
-	}
-
-	// Report effective config (ConfigMap content) to OpAMP server
-	if monitor.Status.ConfigMapRef != nil {
-		var cm corev1.ConfigMap
-		if err := r.Get(ctx, client.ObjectKey{
-			Namespace: monitor.Status.ConfigMapRef.Namespace,
-			Name:      monitor.Status.ConfigMapRef.Name,
-		}, &cm); err == nil {
-			if configYAML, ok := cm.Data[monitor.Status.ConfigMapRef.Key]; ok {
-				if err := c.SetEffectiveConfig(configYAML); err != nil {
-					return fmt.Errorf("set effective config: %w", err)
+	names := map[string]bool{}
+	for _, v := range t.Spec.Volumes {
+		if !mounted[v.Name] {
+			continue
+		}
+		if v.ConfigMap != nil {
+			names[v.ConfigMap.Name] = true
+		}
+		if v.Projected != nil {
+			for _, src := range v.Projected.Sources {
+				if src.ConfigMap != nil {
+					names[src.ConfigMap.Name] = true
 				}
 			}
 		}
 	}
-
-	return nil
-}
-
-// isPodReady returns true if the pod has a Ready condition set to True.
-func isPodReady(pod *corev1.Pod) bool {
-	for _, cond := range pod.Status.Conditions {
-		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
-}
-
-// detectDrift compares ConfigMap content with effective config inside a representative pod.
-func (r *CollectorMonitorReconciler) detectDrift(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor, configMap *corev1.ConfigMap) error {
-	// Get expected config from ConfigMap
-	expectedKey := monitor.Status.ConfigMapRef.Key
-	expectedConfig := configMap.Data[expectedKey]
-	if expectedConfig == "" {
-		return fmt.Errorf("config key %q not found in ConfigMap", expectedKey)
-	}
-	expectedHash := sha256.Sum256([]byte(expectedConfig))
-	expectedHashStr := fmt.Sprintf("%x", expectedHash)
-
-	// Find a representative ready pod
-	selector := monitor.Spec.WorkloadSelector.MatchLabels
-	if len(selector) == 0 {
-		return fmt.Errorf("no workload selector matchLabels defined")
-	}
-
-	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.MatchingLabels(selector), client.InNamespace(monitor.Namespace)); err != nil {
-		return err
-	}
-
-	var targetPod *corev1.Pod
-	for _, pod := range podList.Items {
-		if isPodReady(&pod) {
-			targetPod = &pod
-			break
-		}
-	}
-	if targetPod == nil {
-		return fmt.Errorf("no ready pod found for drift check")
-	}
-
-	// Check pod annotation for config hash (full exec implementation would read mounted config file)
-	podHash := targetPod.Annotations["collectorctrl.io/config-hash"]
-	if podHash == "" {
-		// No hash annotation — drift status unknown
-		return nil
-	}
-
-	if !strings.EqualFold(podHash, expectedHashStr) {
-		// Drift detected!
-		r.Recorder.Eventf(monitor, corev1.EventTypeWarning, "ConfigDriftDetected",
-			"Config drift detected on pod %s: expected hash %s, got %s",
-			targetPod.Name, expectedHashStr, podHash)
-	}
-
-	return nil
-}
-
-// setCondition updates a status condition on the CollectorMonitor.
-func (r *CollectorMonitorReconciler) setCondition(ctx context.Context, monitor *collectorctrlv1alpha1.CollectorMonitor, ctype string, status bool, message string) {
-	cond := metav1.Condition{
-		Type:               ctype,
-		Status:             metav1.ConditionTrue,
-		LastTransitionTime: metav1.Now(),
-		Reason:             ctype + "Succeeded",
-		Message:            message,
-	}
-	if !status {
-		cond.Status = metav1.ConditionFalse
-		cond.Reason = ctype + "Failed"
-	}
-	for i, existing := range monitor.Status.Conditions {
-		if existing.Type == ctype {
-			if existing.Status != cond.Status {
-				monitor.Status.Conditions[i] = cond
-			} else {
-				monitor.Status.Conditions[i].Message = message
-			}
-			return
-		}
-	}
-	monitor.Status.Conditions = append(monitor.Status.Conditions, cond)
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *CollectorMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if r.opampStarted == nil {
-		r.opampStarted = make(map[string]bool)
-	}
-	if r.opampClients == nil {
-		r.opampClients = make(map[string]*opamp.Client)
-	}
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&collectorctrlv1alpha1.CollectorMonitor{}).
-		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapConfigMapToMonitors)).
-		Complete(r)
-}
-
-func (r *CollectorMonitorReconciler) mapConfigMapToMonitors(ctx context.Context, obj client.Object) []reconcile.Request {
-	cm, ok := obj.(*corev1.ConfigMap)
-	if !ok {
-		return nil
-	}
-
-	var list collectorctrlv1alpha1.CollectorMonitorList
-	if err := r.List(ctx, &list, client.InNamespace(cm.Namespace)); err != nil {
-		return nil
-	}
-
-	var requests []reconcile.Request
-	for _, monitor := range list.Items {
-		// Match by resolved ConfigMapRef name
-		if monitor.Status.ConfigMapRef != nil && monitor.Status.ConfigMapRef.Name == cm.Name {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Namespace: monitor.Namespace,
-					Name:      monitor.Name,
-				},
-			})
+	var candidates []*corev1.ConfigMap
+	for name := range names {
+		if m.Spec.ConfigMapSelector != nil && m.Spec.ConfigMapSelector.Name != "" && m.Spec.ConfigMapSelector.Name != name {
 			continue
 		}
-		// Match by Spec ConfigMapSelector if not yet resolved
-		if monitor.Spec.ConfigMapSelector != nil && monitor.Spec.ConfigMapSelector.Name == cm.Name {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Namespace: monitor.Namespace,
-					Name:      monitor.Name,
-				},
-			})
+		cm := &corev1.ConfigMap{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: name}, cm); err != nil {
+			return nil, "", err
+		}
+		match := true
+		if m.Spec.ConfigMapSelector != nil {
+			for key, value := range m.Spec.ConfigMapSelector.MatchLabels {
+				if cm.Labels[key] != value {
+					match = false
+				}
+			}
+		}
+		if match {
+			candidates = append(candidates, cm)
 		}
 	}
-	return requests
+	if len(candidates) != 1 {
+		return nil, "", fmt.Errorf("collector container mounts %d matching ConfigMaps; specify configMapSelector.name to resolve ambiguity", len(candidates))
+	}
+	cm := candidates[0]
+	key := ""
+	if m.Spec.ConfigMapSelector != nil {
+		key = m.Spec.ConfigMapSelector.Key
+	}
+	if key == "" {
+		var keys []string
+		for k := range cm.Data {
+			if strings.HasSuffix(k, ".yaml") || strings.HasSuffix(k, ".yml") {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) != 1 {
+			return nil, "", fmt.Errorf("ConfigMap %s has %d YAML keys; specify configMapSelector.key", cm.Name, len(keys))
+		}
+		key = keys[0]
+	}
+	if body, ok := cm.Data[key]; !ok || strings.TrimSpace(body) == "" {
+		return nil, "", fmt.Errorf("ConfigMap %s has no non-empty key %q", cm.Name, key)
+	}
+	// A key filtered out by a volume's items is not mounted.
+	keyMounted := false
+	containsKey := func(volume string, items []corev1.KeyToPath) bool {
+		keyPath := key
+		if len(items) > 0 {
+			keyPath = ""
+			for _, item := range items {
+				if item.Key == key {
+					keyPath = item.Path
+					break
+				}
+			}
+			if keyPath == "" {
+				return false
+			}
+		}
+		for _, mount := range mounts[volume] {
+			// Expressions need pod environment resolution; do not guess.
+			if mount.SubPathExpr != "" {
+				continue
+			}
+			sub := strings.TrimSuffix(mount.SubPath, "/")
+			if sub == "" || keyPath == sub || strings.HasPrefix(keyPath, sub+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, v := range t.Spec.Volumes {
+		if !mounted[v.Name] {
+			continue
+		}
+		if v.ConfigMap != nil && v.ConfigMap.Name == cm.Name && containsKey(v.Name, v.ConfigMap.Items) {
+			keyMounted = true
+		}
+		if v.Projected != nil {
+			for _, src := range v.Projected.Sources {
+				if src.ConfigMap != nil && src.ConfigMap.Name == cm.Name && containsKey(v.Name, src.ConfigMap.Items) {
+					keyMounted = true
+				}
+			}
+		}
+	}
+	if !keyMounted {
+		return nil, "", fmt.Errorf("ConfigMap key %s/%s is excluded from the collector's mounted volume", cm.Name, key)
+	}
+	return cm, key, nil
 }
 
-// cleanupOpAMPClient closes the OpAMP connection for a deleted CollectorMonitor.
-func (r *CollectorMonitorReconciler) cleanupOpAMPClient(ns, name string) {
-	key := fmt.Sprintf("%s/%s", ns, name)
-	r.opampMu.Lock()
-	defer r.opampMu.Unlock()
-	if c := r.opampClients[key]; c != nil {
-		c.Stop()
-		delete(r.opampClients, key)
+func desiredPods(w client.Object) int {
+	switch w := w.(type) {
+	case *appsv1.DaemonSet:
+		return int(w.Status.DesiredNumberScheduled)
+	case *appsv1.Deployment:
+		if w.Spec.Replicas != nil {
+			return int(*w.Spec.Replicas)
+		}
+	case *appsv1.StatefulSet:
+		if w.Spec.Replicas != nil {
+			return int(*w.Spec.Replicas)
+		}
 	}
-	delete(r.opampStarted, key)
+	return 1
 }
 
-// getPodLogs fetches the logs of a collector pod in the specified namespace.
-func (r *CollectorMonitorReconciler) getPodLogs(ctx context.Context, namespace, podName string) (string, error) {
-	if r.Clientset == nil {
-		return "", fmt.Errorf("clientset not initialized")
+// Owner UIDs, including Deployment -> ReplicaSet, keep overlapping labels from
+// attributing another workload's pods to this monitor.
+func (r *CollectorMonitorReconciler) workloadPods(ctx context.Context, w client.Object, kind string) ([]corev1.Pod, error) {
+	owners := map[types.UID]bool{w.GetUID(): true}
+	if kind == "Deployment" {
+		var replicas appsv1.ReplicaSetList
+		if err := r.List(ctx, &replicas, client.InNamespace(w.GetNamespace())); err != nil {
+			return nil, err
+		}
+		for _, rs := range replicas.Items {
+			if owner := metav1.GetControllerOf(&rs); owner != nil && owner.UID == w.GetUID() {
+				owners[rs.UID] = true
+			}
+		}
 	}
-	tailLines := int64(100)
-	req := r.Clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
-		TailLines: &tailLines,
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(w.GetNamespace())); err != nil {
+		return nil, err
+	}
+	result := make([]corev1.Pod, 0)
+	for _, p := range pods.Items {
+		if owner := metav1.GetControllerOf(&p); owner != nil && owners[owner.UID] {
+			result = append(result, p)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
+}
+
+func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1.CollectorMonitor, w client.Object, kind, container string, cm *corev1.ConfigMap) (*opamp.Client, error) {
+	endpoint := m.Spec.OpAMPServer
+	if endpoint == "" {
+		endpoint = r.DefaultServer
+	}
+	if !strings.HasPrefix(endpoint, "wss://") {
+		return nil, fmt.Errorf("opampServer must use wss:// with a trusted server certificate")
+	}
+	if r.ClusterID == "" {
+		return nil, fmt.Errorf("cluster identity is unavailable; set CLUSTER_ID")
+	}
+	token := r.DefaultSecretKey
+	secretVersion := ""
+	if ref := m.Spec.Auth.SecretRef; ref != nil {
+		namespace := ref.Namespace
+		if namespace == "" {
+			namespace = m.Namespace
+		}
+		secret := &corev1.Secret{}
+		reader := r.Reader
+		if reader == nil {
+			reader = r.Client
+		}
+		if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, secret); err != nil {
+			return nil, err
+		}
+		key := ref.Key
+		if key == "" {
+			key = "secret-key"
+		}
+		token = string(secret.Data[key])
+		secretVersion = secret.ResourceVersion
+	}
+	if token == "" {
+		return nil, fmt.Errorf("OpAMP authentication secret is missing or empty")
+	}
+	clusterName := m.Labels["k8s.cluster.name"]
+	if clusterName == "" {
+		clusterName = r.ClusterID
+	}
+	identity := fmt.Sprintf("k8s://%s/%s/%s", r.ClusterID, w.GetUID(), container)
+	spec, _ := json.Marshal(m.Spec)
+	// ConfigMap content changes are sent as observations without reconnecting.
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s", spec, identity, clusterName, cm.Name, secretVersion, endpoint)))
+	key := m.Namespace + "/" + m.Name
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.connections == nil {
+		r.connections = map[string]*connection{}
+	}
+	if current := r.connections[key]; current != nil {
+		if current.fingerprint == fingerprint {
+			return current.client, nil
+		}
+		current.client.Stop()
+		delete(r.connections, key)
+	}
+	c := opamp.NewClient(opamp.ClientConfig{
+		Endpoint: endpoint, TLSConfig: r.TLSConfig, AgentID: identity, AgentType: api.AgentTypeKubernetes,
+		Headers: map[string]string{"Authorization": "Secret-Key " + token},
+		Labels: map[string]string{
+			"k8s.cluster.name": clusterName, "k8s.cluster.id": r.ClusterID,
+			"k8s.namespace": m.Namespace, "k8s.workload.type": kind, "k8s.workload.name": w.GetName(),
+			"k8s.workload.uid": string(w.GetUID()), "k8s.container.name": container,
+			"k8s.configmap.name": cm.Name, "collectorctrl.management.mode": "observe",
+			"collectorctrl.health.source": "container-readiness",
+		},
 	})
-	podLogs, err := req.Stream(ctx)
-	if err != nil {
-		return "", err
+	lifetime := r.lifetime
+	if lifetime == nil {
+		lifetime = ctx
 	}
-	defer podLogs.Close()
+	if err := c.Start(lifetime); err != nil {
+		return nil, err
+	}
+	r.connections[key] = &connection{client: c, fingerprint: fingerprint}
+	return c, nil
+}
 
-	buf := new(bytes.Buffer)
-	_, err = io.Copy(buf, podLogs)
-	if err != nil {
-		return "", err
+func (r *CollectorMonitorReconciler) condition(m *v1.CollectorMonitor, kind string, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type: kind, Status: status, Reason: reason, Message: message, ObservedGeneration: m.Generation,
+	})
+}
+
+func (r *CollectorMonitorReconciler) closeConnection(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c := r.connections[key]; c != nil {
+		c.client.Stop()
+		delete(r.connections, key)
 	}
-	return buf.String(), nil
+}
+
+func (r *CollectorMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.lifetime = context.Background()
+	if err := mgr.Add(&connectionLifetime{reconciler: r}); err != nil {
+		return err
+	}
+	mapper := handler.EnqueueRequestsFromMapFunc(r.mapNamespace)
+	return ctrl.NewControllerManagedBy(mgr).For(&v1.CollectorMonitor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&corev1.ConfigMap{}, mapper).Watches(&corev1.Pod{}, mapper).
+		Watches(&appsv1.Deployment{}, mapper).Watches(&appsv1.DaemonSet{}, mapper).
+		Watches(&appsv1.StatefulSet{}, mapper).Watches(&appsv1.ReplicaSet{}, mapper).Complete(r)
+}
+
+type connectionLifetime struct{ reconciler *CollectorMonitorReconciler }
+
+func (l *connectionLifetime) NeedLeaderElection() bool { return true }
+func (l *connectionLifetime) Start(ctx context.Context) error {
+	<-ctx.Done()
+	l.reconciler.mu.Lock()
+	defer l.reconciler.mu.Unlock()
+	for _, c := range l.reconciler.connections {
+		c.client.Stop()
+	}
+	return nil
+}
+func (r *CollectorMonitorReconciler) mapNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list v1.CollectorMonitorList
+	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	result := make([]reconcile.Request, 0, len(list.Items))
+	for _, m := range list.Items {
+		result = append(result, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: m.Namespace, Name: m.Name}})
+	}
+	return result
 }

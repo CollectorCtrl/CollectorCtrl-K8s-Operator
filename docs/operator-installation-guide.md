@@ -1,3 +1,9 @@
+# Superseded installation instructions
+
+The observation release has different permissions, TLS requirements, and no emergency control. Follow [the current installation guide](../README.md) for this checkout. The material below describes the earlier prototype and is retained for historical context only.
+
+---
+
 # CollectorCtrl K8s Operator — Installation & Troubleshooting Guide
 
 > **Version:** 1.0  

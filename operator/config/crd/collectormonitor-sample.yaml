@@ -38,7 +38,7 @@ spec:
 
   # Emergency override capability
   emergencyMode:
-    enabled: true
+    enabled: false
 
   # Enrich OpAMP labels with node metadata
   enrichWithNodeMetadata: true

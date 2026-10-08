@@ -1,3 +1,4 @@
+{{- if .Values.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -9,6 +10,7 @@ metadata:
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+{{- end }}
 {{- if .Values.rbac.clusterScoped }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -18,46 +20,34 @@ metadata:
   labels:
     {{- include "collectorctrl-operator.labels" . | nindent 4 }}
 rules:
-  # Core workloads
   - apiGroups: ["apps"]
     resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch"]
-  # ConfigMaps (write for emergency mode)
   - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  # Secrets (read for OpAMP authentication)
+    resources: ["configmaps", "pods"]
+    verbs: ["get", "list", "watch"]
+{{- if .Values.rbac.authSecretNames }}
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
-  # Pods and exec
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
+    resourceNames:
+      {{- toYaml .Values.rbac.authSecretNames | nindent 6 }}
     verbs: ["get"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
-  # Nodes (for metadata enrichment)
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
-  # Events
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
-  # CRD management
+{{- end }}
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors/status"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["collectorctrl.io"]
-    resources: ["collectormonitors/finalizers"]
-    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["kube-system"]
+    verbs: ["get"]
+{{- if .Values.leaderElection.enabled }}
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -87,32 +77,26 @@ rules:
     resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    resources: ["configmaps", "pods"]
+    verbs: ["get", "list", "watch"]
+{{- if .Values.rbac.authSecretNames }}
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
+    resourceNames:
+      {{- toYaml .Values.rbac.authSecretNames | nindent 6 }}
     verbs: ["get"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
+{{- end }}
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors/status"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["collectorctrl.io"]
-    resources: ["collectormonitors/finalizers"]
-    verbs: ["update"]
+{{- if .Values.leaderElection.enabled }}
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
