@@ -3,6 +3,9 @@ name: Build and Push Operator Image
 on:
   push:
     branches: [main, master]
+    # Version tags (e.g. v0.6.0-beta) publish an immutable image tag (0.6.0-beta)
+    # through the semver rules below. Tag pushes ignore the paths filter.
+    tags: ['v*']
     paths:
       - 'cmd/operator/**'
       - 'operator/**'
