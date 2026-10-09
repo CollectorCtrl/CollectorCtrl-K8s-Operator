@@ -75,7 +75,6 @@ spec:
                           type: string
                         key:
                           type: string
-                          default: "secret-key"
                 healthCheck:
                   type: object
                   properties:
@@ -141,10 +140,10 @@ spec:
                         type: string
                       status:
                         type: string
-                        enum:
-                          - "True"
-                          - "False"
-                          - Unknown
+                      enum:
+                        - "True"
+                        - "False"
+                        - Unknown
                       observedGeneration:
                         type: integer
                         format: int64

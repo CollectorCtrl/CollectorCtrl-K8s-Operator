@@ -81,7 +81,7 @@ The CollectorCtrl Operator runs inside your Kubernetes cluster as a **Deployment
 The operator image is published to GitHub Container Registry (GHCR):
 
 ```
-ghcr.io/collectorctrl/collectorctrl/operator:latest
+ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest
 ```
 
 > **Note:** GHCR images are private by default. You need a GitHub Personal Access Token (PAT) with `read:packages` scope to pull.
@@ -600,25 +600,20 @@ This works for DaemonSet, Deployment, and StatefulSet.
 
 ## Moving the Image to the Official Repo
 
-The operator image is currently at:
+The image now lives in the official organization:
 ```
-ghcr.io/rahulmhatre2505/collectorctrl-k8s-code/operator:latest
-```
-
-After moving to the official org:
-```
-ghcr.io/collectorctrl/collectorctrl/operator:latest
+ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest
 ```
 
-Update the deployment:
+Older installs may still reference `ghcr.io/rahulmhatre2505/collectorctrl-k8s-code/operator`. Point them at the official image (the container is named `manager`):
 
 ```bash
 kubectl set image deployment/collectorctrl-operator \
-  operator=ghcr.io/collectorctrl/collectorctrl/operator:latest \
+  manager=ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest \
   -n collectorctrl
 ```
 
-Also update the GitHub Actions workflow to push to the new registry and update any documentation links.
+For Helm installs, the chart default `image.repository` already uses this path.
 
 ---
 

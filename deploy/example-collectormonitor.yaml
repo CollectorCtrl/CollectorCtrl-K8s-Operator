@@ -1,16 +1,10 @@
-# Example CollectorMonitor that watches a Splunk OpenTelemetry Collector DaemonSet
-# Adjust the namespace, labels, and ConfigMap to match your actual collector deployment.
+# Example CollectorMonitor: observe an existing Splunk OpenTelemetry Collector DaemonSet.
+# Adjust namespace, workload, container and ConfigMap to match your deployment.
+#
+# Authentication comes from the observer's own enrollment token
+# (Secret collectorctrl-auth in the collectorctrl namespace), so no per-monitor
+# Secret is needed. spec.opampServer must exactly match the observer's OPAMP_SERVER.
 
-apiVersion: v1
-kind: Secret
-metadata:
-  name: collectorctrl-auth
-  namespace: observability
-  labels:
-    app.kubernetes.io/part-of: collectorctrl
-stringData:
-  secret-key: "change-me-to-your-shared-secret"
----
 apiVersion: collectorctrl.io/v1alpha1
 kind: CollectorMonitor
 metadata:
@@ -20,37 +14,26 @@ metadata:
     k8s.cluster.name: "dev-cluster"
     app.kubernetes.io/part-of: collectorctrl
 spec:
-  # Match the Splunk OTel Collector DaemonSet
+  # Must select exactly one Deployment, DaemonSet or StatefulSet.
   workloadSelector:
+    kind: DaemonSet
     matchLabels:
       app.kubernetes.io/name: splunk-otel-collector
       app.kubernetes.io/component: otel-collector
-    kind: DaemonSet
 
-  # The ConfigMap holding the collector config
+  # Required when the pod has more than one container.
+  collectorContainer: otel-collector
+
+  # Only needed when several ConfigMaps or keys are mounted.
   configMapSelector:
-    name: splunk-otel-collector-otel-k8s-cluster-receiver
+    name: splunk-otel-collector-otel-agent
     key: relay.yaml
 
-  # CollectorCtrl Server endpoint
-  opampServer: "wss://collectorctrl.corp.internal:4320/v1/opamp"
+  opampServer: "wss://collectorctrl.example.internal:4320/v1/opamp"
 
-  auth:
-    secretRef:
-      name: collectorctrl-auth
-      namespace: observability
-      key: secret-key
+  # Upload the collector YAML to CollectorCtrl. Off by default; leave it off
+  # if the config contains inline credentials.
+  reportConfig: false
 
   healthCheck:
-    enabled: true
     interval: 30s
-    metricsPort: 8888
-
-  driftDetection:
-    enabled: true
-    interval: 60s
-
-  emergencyMode:
-    enabled: false
-
-  enrichWithNodeMetadata: true

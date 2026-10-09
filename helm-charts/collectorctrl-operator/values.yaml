@@ -1,9 +1,13 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/collectorctrl/operator
-  pullPolicy: IfNotPresent
-  tag: "v1.0.0"
+  # Published by .github/workflows/build-operator.yml as ghcr.io/<owner>/<repo>/operator.
+  repository: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator
+  # The workflow currently publishes only the mutable "latest" and "main" tags, so
+  # pull on every start. Pin an immutable version tag or digest once versioned
+  # images are published, and set pullPolicy back to IfNotPresent.
+  pullPolicy: Always
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -103,6 +107,8 @@ serviceMonitor:
   scrapeTimeout: 10s
   labels: {}
 
-# Leader election (recommended for HA, requires replicaCount > 1)
+# Leader election is not needed: the observer runs exactly one replica because
+# credential storage supports a single writer (replicaCount must stay 1).
+# Leave disabled; enabling it only adds a Lease lock and its RBAC.
 leaderElection:
   enabled: false

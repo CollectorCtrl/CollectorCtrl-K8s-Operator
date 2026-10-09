@@ -1,170 +1,105 @@
-# Superseded installation instructions
+# Deploying the CollectorCtrl observer with kubectl
 
-The observation release has different permissions, TLS requirements, and no emergency control. Follow [the current installation guide](../README.md) for this checkout. The material below describes the earlier prototype and is retained for historical context only.
+The **Helm chart** in `helm-charts/collectorctrl-operator` is the supported install
+path; see the [main README](../README.md). These raw manifests mirror the chart's
+defaults for clusters where Helm isn't available.
 
----
+What gets installed in the `collectorctrl` namespace:
 
-# Deploying the CollectorCtrl Operator
+| File | Contents |
+|------|----------|
+| `namespace.yaml` | The `collectorctrl` namespace |
+| `crd.yaml` | The `CollectorMonitor` CRD (same as the chart's `crds/crd.yaml`) |
+| `rbac.yaml` | ServiceAccount plus read-only ClusterRole/Binding. No Secret access is needed |
+| `credentials-pvc.yaml` | Retained 128Mi claim for per-workload credentials |
+| `deployment.yaml` | One observer replica, `Recreate` strategy, enrollment auth |
 
-> **Prerequisites:** A Kubernetes cluster (v1.25+) and `kubectl` access.  
-> **Docker:** Only needed if building the image yourself. Pre-built images can be pulled from a registry.
+Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest`
 
----
+## Prerequisites
 
-## Option A: Quick Start with kubectl (No Helm Needed)
+- Kubernetes 1.25+ and `kubectl` access with permission to create CRDs and cluster RBAC.
+- A CollectorCtrl server **v0.6.0-beta or later**, reachable from the cluster over
+  `wss://` (port 4320) with a certificate the observer trusts. Certificate
+  verification cannot be turned off; supply your CA if it is private.
+- An **Agent Enrollment** token (`cce_…`) from **Settings → API Tokens → Agent Enrollment**. Each
+  monitored workload/container uses one enrollment.
+- A storage class that can provision the credential claim.
+
+## Install with the script
+
+From the repository root:
 
 ```bash
-# 1. Install the CRD
-kubectl apply -f deploy/crd.yaml
+OPAMP_SERVER=wss://collectorctrl.example.com:4320/v1/opamp ./deploy/deploy.sh
+# Private CA:
+OPAMP_SERVER=wss://collectorctrl.example.com:4320/v1/opamp \
+OPAMP_CA_FILE=./ca.pem ./deploy/deploy.sh
+```
 
-# 2. Create the namespace
+The script prompts for the enrollment token (or reads `ENROLL_TOKEN`), creates the
+`collectorctrl-auth` Secret, applies the manifests and sets `OPAMP_SERVER`.
+
+## Install by hand
+
+```bash
 kubectl apply -f deploy/namespace.yaml
-
-# 3. Install RBAC (ServiceAccount + ClusterRole + ClusterRoleBinding)
+kubectl create secret generic collectorctrl-auth -n collectorctrl \
+  --from-literal=enrollment-token=cce_YOUR_TOKEN
+kubectl apply -f deploy/crd.yaml
 kubectl apply -f deploy/rbac.yaml
-
-# 4. Install the operator
+kubectl apply -f deploy/credentials-pvc.yaml
+# Edit OPAMP_SERVER in deployment.yaml first
 kubectl apply -f deploy/deployment.yaml
-
-# 5. Create a CollectorMonitor to watch your OTel collector workload
-kubectl apply -f deploy/example-collectormonitor.yaml
 ```
 
----
+For a private CA, create `kubectl create configmap collectorctrl-opamp-ca -n collectorctrl --from-file=ca.crt=./ca.pem`
+and uncomment the `OPAMP_CA_FILE` lines in `deployment.yaml`.
 
-## Option B: Helm Chart
+## Monitor a collector
 
-```bash
-# 1. Install the chart (cluster-scoped RBAC by default)
-helm install collectorctrl-operator ./helm-charts/collectorctrl-operator \
-  --namespace collectorctrl \
-  --create-namespace \
-  --set opamp.server=wss://your-collectorctrl-server:4320/v1/opamp \
-  --set opamp.secretKey=your-shared-secret
+Edit `example-collectormonitor.yaml` (or `coralogix-collectormonitor.yaml`) so the
+selector matches **exactly one** workload, set `collectorContainer` for
+multi-container pods, and set `opampServer` to the same endpoint as the observer.
+Then:
 
-# 2. Verify the operator is running
-kubectl get pods -n collectorctrl
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator
-
-# 3. Create a CollectorMonitor
-kubectl apply -f deploy/example-collectormonitor.yaml
-```
-
-### Helm Values Reference
-
-| Value | Description | Default |
-|-------|-------------|---------|
-| `opamp.server` | WebSocket endpoint of CollectorCtrl server | `wss://collectorctrl.corp.internal:4320/v1/opamp` |
-| `opamp.existingSecret` | K8s Secret name containing auth key | `""` |
-| `opamp.secretKey` | Plaintext auth key (not recommended for prod) | `""` |
-| `rbac.clusterScoped` | `true` = cluster-wide, `false` = namespace-only | `true` |
-| `replicaCount` | Number of operator replicas | `1` |
-| `leaderElection.enabled` | Enable leader election (needs replicaCount > 1) | `false` |
-| `serviceMonitor.enabled` | Create Prometheus ServiceMonitor | `false` |
-
----
-
-## Option C: Build and Push Your Own Image
-
-```bash
-# 1. Build the operator binary (Linux, static)
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s -w' -o manager ./cmd/operator
-
-# 2. Build the Docker image
-docker build -f Dockerfile.operator -t your-registry/collectorctrl-operator:v1.0.0 .
-
-# 3. Push to your registry
-docker push your-registry/collectorctrl-operator:v1.0.0
-
-# 4. Update values.yaml or deployment.yaml to use your image
-```
-
----
-
-## Verifying the Deployment
-
-### 1. Check Operator Pod
-```bash
-kubectl get pods -n collectorctrl
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator
-```
-
-Expected: `starting manager` in logs, pod status `Running`.
-
-### 2. Check CollectorMonitor CRD
-```bash
-kubectl get crd collectormonitors.collectorctrl.io
-kubectl api-resources | grep collectormonitor
-```
-
-### 3. Create a Test CollectorMonitor
 ```bash
 kubectl apply -f deploy/example-collectormonitor.yaml
-kubectl get collectormonitor -n <your-namespace>
-kubectl describe collectormonitor -n <your-namespace>
+kubectl get collectormonitors -A
+kubectl describe collectormonitor splunk-otel-collector -n observability
 ```
 
-### 4. Verify OpAMP Connection
-```bash
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator | grep -i opamp
-```
+The workload appears in CollectorCtrl under **Fleet → Kubernetes workloads**.
 
-Expected: `OpAMP connected` or health report messages.
+## Upgrading from the shared-secret prototype
 
-### 5. Check Status
-```bash
-kubectl get collectormonitor -o yaml
-```
+Earlier manifests used `OPAMP_SECRET_KEY` and a `secret-key` Secret. To migrate
+without re-enrolling by hand:
 
-Expected fields in `.status`:
-- `phase: Active`
-- `agentCount` (number of discovered pods)
-- `healthyAgents` (number of healthy pods)
-- `configMapRef` (resolved ConfigMap name/key)
-- `conditions` (list with `Active`, `Discovered`, `OpAMPConnected`, `ConfigMapResolved`)
+1. Keep server legacy mode on, apply `credentials-pvc.yaml`, and run the observer
+   once with `OPAMP_AUTH_MODE=legacy` and `OPAMP_SECRET_KEY` so it saves per-workload
+   credentials.
+2. Switch to `deployment.yaml` from this folder (enrollment mode) and keep the claim.
+3. Remove `auth.secretRef`/`secret-key` and the deprecated `driftDetection`,
+   `emergencyMode`, `enrichWithNodeMetadata` and `healthCheck.metricsPort` fields
+   from your monitors.
+4. Turn server legacy mode off.
 
----
+New installs should use enrollment directly.
 
 ## Troubleshooting
 
-### Operator pod in CrashLoopBackOff
+| Symptom | Check |
+|---------|-------|
+| Pod `CreateContainerConfigError` | Secret `collectorctrl-auth` with key `enrollment-token` exists in `collectorctrl` |
+| Pod `Pending` | The credential claim is bound (`kubectl get pvc -n collectorctrl`) |
+| TLS or `x509` errors in logs | Endpoint hostname matches the certificate; supply the CA |
+| Monitor error "opampServer must match" | `spec.opampServer` equals the observer's `OPAMP_SERVER` exactly |
+| Monitor reports ambiguous workload or ConfigMap | Narrow `matchLabels`, or set `configMapSelector.name`/`key` |
+| Workload re-enrolment fails after revoke | Reset the identity under Agent Enrollment; see the main README |
+
 ```bash
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator --previous
+kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator
 ```
-Common causes:
-- **RBAC missing**: Ensure ClusterRole/ClusterRoleBinding are applied
-- **CRD missing**: `kubectl apply -f deploy/crd.yaml`
-- **OpAMP server unreachable**: Check network/firewall to CollectorCtrl server
-- **Auth secret missing**: Create the Secret referenced by `opamp.existingSecret`
 
-### CollectorMonitor stuck in `Pending`
-```bash
-kubectl describe collectormonitor <name> -n <namespace>
-```
-Common causes:
-- **Workload not found**: Verify `matchLabels` matches your collector Deployment/DaemonSet
-- **ConfigMap not found**: Either set `configMapSelector.name` or ensure the workload mounts a ConfigMap
-- **No pods running**: The workload selector might match a workload with 0 replicas
-
-### OpAMP connection failing
-```bash
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator | grep -i "opamp\|websocket\|dial"
-```
-Common causes:
-- **Wrong server URL**: Verify `wss://` vs `ws://` and port
-- **TLS certificate invalid**: If using self-signed certs, configure `tls.insecureSkipVerify` (dev only)
-- **Auth secret wrong key**: Ensure Secret has key `secret-key` (or the key specified in `SecretRef.Key`)
-- **Network policy blocking**: Check if K8s network policies block egress from the operator pod
-
----
-
-## Next Steps After Deployment
-
-1. **Connect the CollectorCtrl Server** — The server should see the cluster as a single agent entry in the fleet overview
-2. **Test GitOps** — Edit a collector config via the UI; the server should commit to Git, and the operator should detect the change via drift detection
-3. **Test Emergency Mode** — Trigger an emergency config update; the operator should patch the ConfigMap directly
-4. **Monitor Metrics** — The operator exposes metrics on `:8080/metrics` for Prometheus scraping
-
----
-
-*Generated for CollectorCtrl Operator v1.0.0 deployment.*
+The observer exposes metrics on `:8080/metrics` and health on `:8081`.

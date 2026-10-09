@@ -1,3 +1,7 @@
+# Cluster-wide, read-only observation RBAC for the CollectorCtrl observer.
+# The enrollment token reaches the pod as an environment variable from a Secret,
+# so the observer needs no API access to Secrets. Grant secrets/get for named
+# Secrets only if a CollectorMonitor uses spec.auth.secretRef.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -21,16 +25,13 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps", "pods"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["collectorctrl-auth"]
-    verbs: ["get"]
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors/status"]
     verbs: ["get", "update", "patch"]
+  # Stable cluster ID is derived from the kube-system namespace UID.
   - apiGroups: [""]
     resources: ["namespaces"]
     resourceNames: ["kube-system"]

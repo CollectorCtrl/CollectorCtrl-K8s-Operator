@@ -4,9 +4,10 @@ CollectorCtrl observes OpenTelemetry collectors deployed through your existing
 Helm charts, upstream operators, GitOps controllers, or deployment pipelines.
 It does not replace those tools or change their workloads.
 
-This checkout implements the first observation milestone. Build an image from
-this checkout; existing published images may still contain the older prototype.
-Deploy the matching CollectorCtrl server and frontend before onboarding.
+This checkout implements the first observation milestone (CollectorCtrl
+v0.6.0-beta). Use the published `latest` image built from `main`, or build your
+own from this checkout. Deploy the matching CollectorCtrl server and frontend
+before onboarding.
 
 ## Current behavior
 
@@ -33,8 +34,8 @@ Deploy the matching CollectorCtrl server and frontend before onboarding.
 
 ## Install
 
-Build and publish a matching image through your normal release pipeline. For a
-local development registry:
+The published image is `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator` (tags `latest` and `main`), and it is the
+chart default. To build your own image instead, for a local development registry:
 
 ```sh
 docker build -f Dockerfile.operator -t YOUR_REGISTRY/collectorctrl-observer:observe-dev .

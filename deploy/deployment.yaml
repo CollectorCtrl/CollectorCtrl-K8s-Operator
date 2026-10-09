@@ -1,3 +1,7 @@
+# CollectorCtrl Kubernetes observer (raw manifest).
+# The Helm chart in helm-charts/collectorctrl-operator is the supported install
+# path; this manifest mirrors its defaults for clusters without Helm.
+# Before applying, replace OPAMP_SERVER (or use deploy/deploy.sh, which does it).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,10 +10,13 @@ metadata:
   labels:
     app.kubernetes.io/name: collectorctrl-operator
     app.kubernetes.io/instance: collectorctrl-operator
-    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/version: "0.6.0-beta"
     app.kubernetes.io/managed-by: kubectl
 spec:
+  # Exactly one replica: credential storage supports a single writer.
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: collectorctrl-operator
@@ -23,6 +30,7 @@ spec:
       serviceAccountName: collectorctrl-operator
       securityContext:
         runAsNonRoot: true
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -35,19 +43,38 @@ spec:
             readOnlyRootFilesystem: true
             runAsUser: 65532
             runAsGroup: 65532
-          image: "ghcr.io/rahulmhatre2505/collectorctrl-operator:v1.0.0"
+          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest"
           imagePullPolicy: Always
           args:
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
           env:
             - name: OPAMP_SERVER
-              value: "wss://172.31.30.24:4320/v1/opamp"
-            - name: OPAMP_SECRET_KEY
+              # Must be wss:// with a certificate the observer trusts. Every
+              # CollectorMonitor must use exactly this endpoint.
+              value: "wss://collectorctrl.example.internal:4320/v1/opamp"
+            - name: OPAMP_AUTH_MODE
+              value: "enroll"
+            - name: OPAMP_ENROLL_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: collectorctrl-auth
-                  key: secret-key
+                  key: enrollment-token
+            - name: OPAMP_CREDENTIAL_DIRECTORY
+              value: /var/lib/collectorctrl/credentials
+            - name: CLUSTER_ID
+              # Empty: derived from the kube-system namespace UID.
+              value: ""
+            # Private CA: create ConfigMap collectorctrl-opamp-ca (key ca.crt),
+            # then uncomment this env var and the opamp-ca mount and volume.
+            # - name: OPAMP_CA_FILE
+            #   value: /etc/collectorctrl/ca/ca.crt
+          volumeMounts:
+            - name: credentials
+              mountPath: /var/lib/collectorctrl
+            # - name: opamp-ca
+            #   mountPath: /etc/collectorctrl/ca
+            #   readOnly: true
           ports:
             - name: metrics
               containerPort: 8080
@@ -74,3 +101,10 @@ spec:
             requests:
               cpu: 100m
               memory: 128Mi
+      volumes:
+        - name: credentials
+          persistentVolumeClaim:
+            claimName: collectorctrl-operator-credentials
+        # - name: opamp-ca
+        #   configMap:
+        #     name: collectorctrl-opamp-ca
