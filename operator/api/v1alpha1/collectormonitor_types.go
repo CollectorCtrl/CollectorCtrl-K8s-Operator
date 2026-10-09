@@ -98,7 +98,7 @@ type ConfigMapSelector struct {
 // OpAMPAuth configures authentication to the CollectorCtrl Server.
 type OpAMPAuth struct {
 	// SecretRef points to a Kubernetes Secret containing the credentials.
-	// The secret must have a key named "secret-key".
+	// Uses enrollment-token by default, or secret-key in explicit legacy mode.
 	// +optional
 	SecretRef *SecretRef `json:"secretRef,omitempty"`
 
@@ -111,13 +111,12 @@ type SecretRef struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// Namespace of the Secret. Defaults to the same namespace as the CollectorMonitor.
+	// Namespace of the Secret. Must be the same namespace as the CollectorMonitor.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
-	// Key within the Secret that holds the credential. Defaults to "secret-key".
+	// Key within the Secret. Defaults to enrollment-token (secret-key in legacy mode).
 	// +optional
-	// +kubebuilder:default="secret-key"
 	Key string `json:"key,omitempty"`
 }
 

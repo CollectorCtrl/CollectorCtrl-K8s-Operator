@@ -1,0 +1,8 @@
+# Overlay on values.yaml. Let OpenShift assign a UID from the project's SCC range.
+# Retains non-root, RuntimeDefault seccomp, dropped capabilities, and read-only root.
+# Deployment on OpenShift still requires live restricted-v2 SCC validation.
+securityContext:
+  runAsUser: null
+  runAsGroup: null
+podSecurityContext:
+  fsGroup: null

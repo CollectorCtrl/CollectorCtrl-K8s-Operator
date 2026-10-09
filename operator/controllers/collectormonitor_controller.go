@@ -33,20 +33,24 @@ import (
 // CollectorMonitorReconciler observes existing workloads. It never writes to them.
 type CollectorMonitorReconciler struct {
 	client.Client
-	Reader           client.Reader
-	Scheme           *runtime.Scheme
-	DefaultSecretKey string
-	DefaultServer    string
-	ClusterID        string
-	TLSConfig        *tls.Config
-	lifetime         context.Context
-	mu               sync.Mutex
-	connections      map[string]*connection
+	Reader              client.Reader
+	Scheme              *runtime.Scheme
+	DefaultSecretKey    string
+	EnrollmentToken     string
+	AuthMode            string
+	CredentialDirectory string
+	DefaultServer       string
+	ClusterID           string
+	TLSConfig           *tls.Config
+	lifetime            context.Context
+	mu                  sync.Mutex
+	connections         map[string]*connection
 }
 
 type connection struct {
 	client      *opamp.Client
 	fingerprint [32]byte
+	identity    string
 }
 
 // +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors,verbs=get;list;watch
@@ -104,7 +108,8 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	observation := opamp.Observation{
 		Source: "kubernetes-api", RuntimeVerified: false, ObservedAt: time.Now().UTC(),
-		Namespace: monitor.Namespace, WorkloadKind: kind, WorkloadName: workload.GetName(),
+		ReportIntervalSeconds: int64(reportInterval(monitor) / time.Second),
+		Namespace:             monitor.Namespace, WorkloadKind: kind, WorkloadName: workload.GetName(),
 		WorkloadUID: string(workload.GetUID()), CollectorContainer: container,
 		ConfigMapName: cm.Name, ConfigMapKey: configKey, ResourceVersion: cm.ResourceVersion,
 		ConfigHash:  fmt.Sprintf("%x", sha256.Sum256([]byte(cm.Data[configKey]))),
@@ -114,20 +119,7 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		observation.ConfigYAML = cm.Data[configKey]
 	}
 	for _, pod := range pods {
-		p := opamp.PodHealth{Name: pod.Name, Node: pod.Spec.NodeName, Phase: string(pod.Status.Phase)}
-		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == container {
-				p.Ready = status.Ready && pod.DeletionTimestamp == nil
-				p.Restarts = status.RestartCount
-				p.Image = status.Image
-				if status.State.Waiting != nil {
-					p.Reason = status.State.Waiting.Reason
-				}
-				if status.State.Terminated != nil {
-					p.Reason = status.State.Terminated.Reason
-				}
-			}
-		}
+		p := observePod(pod, container)
 		if p.Ready {
 			observation.ReadyPods++
 		}
@@ -138,10 +130,13 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := c.Report(observation); err != nil {
 		return fail("HealthReported", err)
 	}
-	r.condition(monitor, "HealthReported", metav1.ConditionTrue, "ReadinessReported", "Collector container readiness reported; telemetry health remains unknown")
+	r.condition(monitor, "HealthReported", metav1.ConditionUnknown, "DeliveryUnconfirmed", "API observation prepared; server receipt is not acknowledged")
 	connected := c.Connected()
 	monitor.Status.Phase = "Disconnected"
 	r.condition(monitor, "OpAMPConnected", metav1.ConditionFalse, "Connecting", "Waiting for authenticated OpAMP connection")
+	if c.ConnectionError() != nil {
+		r.condition(monitor, "OpAMPConnected", metav1.ConditionFalse, "ConnectionFailed", "Connection failed; check the approved endpoint, CA trust and enrollment credentials")
+	}
 	if connected {
 		monitor.Status.Phase = "Active"
 		now := metav1.Now()
@@ -152,6 +147,10 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if connected {
 		r.condition(monitor, "Active", metav1.ConditionTrue, "Observing", "Observing existing collector workload without deployment control")
 	}
+	return ctrl.Result{RequeueAfter: reportInterval(monitor)}, r.Status().Update(ctx, monitor)
+}
+
+func reportInterval(monitor *v1.CollectorMonitor) time.Duration {
 	interval := monitor.Spec.HealthCheck.Interval.Duration
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -159,7 +158,31 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if interval < 5*time.Second {
 		interval = 5 * time.Second
 	}
-	return ctrl.Result{RequeueAfter: interval}, r.Status().Update(ctx, monitor)
+	if interval > time.Hour {
+		interval = time.Hour
+	}
+	return interval
+}
+
+// observePod preserves Kubernetes phase separately from deletion intent.
+func observePod(pod corev1.Pod, container string) opamp.PodHealth {
+	p := opamp.PodHealth{UID: string(pod.UID), Name: pod.Name, Node: pod.Spec.NodeName,
+		Phase: string(pod.Status.Phase), Terminating: pod.DeletionTimestamp != nil}
+	completed := pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name != container {
+			continue
+		}
+		p.Ready = status.Ready && !p.Terminating && !completed
+		p.Restarts, p.Image = status.RestartCount, status.Image
+		if status.State.Waiting != nil {
+			p.Reason = status.State.Waiting.Reason
+		}
+		if status.State.Terminated != nil {
+			p.Reason = status.State.Terminated.Reason
+		}
+	}
+	return p
 }
 
 func (r *CollectorMonitorReconciler) discoverWorkload(ctx context.Context, monitor *v1.CollectorMonitor) (client.Object, string, error) {
@@ -407,22 +430,32 @@ func (r *CollectorMonitorReconciler) workloadPods(ctx context.Context, w client.
 }
 
 func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1.CollectorMonitor, w client.Object, kind, container string, cm *corev1.ConfigMap) (*opamp.Client, error) {
-	endpoint := m.Spec.OpAMPServer
-	if endpoint == "" {
-		endpoint = r.DefaultServer
-	}
-	if !strings.HasPrefix(endpoint, "wss://") {
-		return nil, fmt.Errorf("opampServer must use wss:// with a trusted server certificate")
+	endpoint, err := opamp.ApprovedEndpoint(r.DefaultServer, m.Spec.OpAMPServer)
+	if err != nil {
+		return nil, err
 	}
 	if r.ClusterID == "" {
 		return nil, fmt.Errorf("cluster identity is unavailable; set CLUSTER_ID")
 	}
-	token := r.DefaultSecretKey
+	mode := r.AuthMode
+	if mode == "" {
+		mode = "enroll"
+	}
+	if mode != "enroll" && mode != "legacy" {
+		return nil, fmt.Errorf("auth mode must be enroll or legacy")
+	}
+	token := r.EnrollmentToken
+	if mode == "legacy" {
+		token = r.DefaultSecretKey
+	}
 	secretVersion := ""
 	if ref := m.Spec.Auth.SecretRef; ref != nil {
 		namespace := ref.Namespace
 		if namespace == "" {
 			namespace = m.Namespace
+		}
+		if namespace != m.Namespace {
+			return nil, fmt.Errorf("auth.secretRef must be in the CollectorMonitor namespace")
 		}
 		secret := &corev1.Secret{}
 		reader := r.Reader
@@ -434,13 +467,13 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 		}
 		key := ref.Key
 		if key == "" {
-			key = "secret-key"
+			key = "enrollment-token"
+			if mode == "legacy" {
+				key = "secret-key"
+			}
 		}
 		token = string(secret.Data[key])
 		secretVersion = secret.ResourceVersion
-	}
-	if token == "" {
-		return nil, fmt.Errorf("OpAMP authentication secret is missing or empty")
 	}
 	clusterName := m.Labels["k8s.cluster.name"]
 	if clusterName == "" {
@@ -449,12 +482,17 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 	identity := fmt.Sprintf("k8s://%s/%s/%s", r.ClusterID, w.GetUID(), container)
 	spec, _ := json.Marshal(m.Spec)
 	// ConfigMap content changes are sent as observations without reconnecting.
-	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s", spec, identity, clusterName, cm.Name, secretVersion, endpoint)))
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", spec, identity, clusterName, cm.Name, secretVersion, endpoint, mode, token)))
 	key := m.Namespace + "/" + m.Name
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.connections == nil {
 		r.connections = map[string]*connection{}
+	}
+	for owner, current := range r.connections {
+		if owner != key && current.identity == identity {
+			return nil, fmt.Errorf("workload/container is already observed by %s; use one monitor per identity", owner)
+		}
 	}
 	if current := r.connections[key]; current != nil {
 		if current.fingerprint == fingerprint {
@@ -463,9 +501,9 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 		current.client.Stop()
 		delete(r.connections, key)
 	}
-	c := opamp.NewClient(opamp.ClientConfig{
+	cfg := opamp.ClientConfig{
 		Endpoint: endpoint, TLSConfig: r.TLSConfig, AgentID: identity, AgentType: api.AgentTypeKubernetes,
-		Headers: map[string]string{"Authorization": "Secret-Key " + token},
+		CredentialDirectory: r.CredentialDirectory,
 		Labels: map[string]string{
 			"k8s.cluster.name": clusterName, "k8s.cluster.id": r.ClusterID,
 			"k8s.namespace": m.Namespace, "k8s.workload.type": kind, "k8s.workload.name": w.GetName(),
@@ -473,7 +511,13 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 			"k8s.configmap.name": cm.Name, "collectorctrl.management.mode": "observe",
 			"collectorctrl.health.source": "container-readiness",
 		},
-	})
+	}
+	if mode == "legacy" {
+		cfg.LegacySecret = token
+	} else {
+		cfg.EnrollmentToken = token
+	}
+	c := opamp.NewClient(cfg)
 	lifetime := r.lifetime
 	if lifetime == nil {
 		lifetime = ctx
@@ -481,7 +525,7 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 	if err := c.Start(lifetime); err != nil {
 		return nil, err
 	}
-	r.connections[key] = &connection{client: c, fingerprint: fingerprint}
+	r.connections[key] = &connection{client: c, fingerprint: fingerprint, identity: identity}
 	return c, nil
 }
 

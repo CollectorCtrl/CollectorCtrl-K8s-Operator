@@ -75,7 +75,6 @@ spec:
                           type: string
                         key:
                           type: string
-                          default: "secret-key"
                 healthCheck:
                   type: object
                   properties:

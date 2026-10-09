@@ -21,11 +21,22 @@ serviceAccount:
 # OpAMP Server connection settings
 opamp:
   server: "wss://collectorctrl.corp.internal:4320/v1/opamp"
-  # Reference to an existing secret containing the auth key
-  # The secret must have a key named "secret-key"
+  # enroll is the secure default; legacy requires explicit server legacy mode.
+  authMode: enroll
+  # Existing Secret with enrollment-token (cce_...). Each new workload consumes
+  # one enrollment use; existing workloads reconnect with persisted credentials.
+  enrollmentSecret: ""
+  # Legacy migration only: existing Secret with secret-key.
   existingSecret: ""
   # If existingSecret is not set, provide the secret key directly (not recommended for production)
   secretKey: ""
+
+# Required durable credentials; retain this volume across upgrades/reinstalls.
+# One active replica is supported; Recreate avoids simultaneous writers.
+credentialStorage:
+  existingClaim: ""
+  size: 128Mi
+  storageClassName: null
 
 # RBAC scope: true = observe collectors across namespaces
 # false = namespace-scoped only
@@ -58,6 +69,7 @@ affinity: {}
 # Pod security context
 podSecurityContext:
   runAsNonRoot: true
+  fsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 

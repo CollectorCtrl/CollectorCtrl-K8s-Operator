@@ -137,3 +137,57 @@ func TestConfigSubPathSelection(t *testing.T) {
 		t.Fatal("dynamic mount path guessed")
 	}
 }
+
+func TestObservePodLifecycle(t *testing.T) {
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "collector-0", UID: "old"}, Status: corev1.PodStatus{
+		Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "collector", Ready: true, RestartCount: 3, Image: "otel:1"}},
+	}}
+	p := observePod(pod, "collector")
+	if !p.Ready || p.UID != "old" || p.Restarts != 3 {
+		t.Fatalf("lost current identity/status: %+v", p)
+	}
+	now := metav1.Now()
+	pod.DeletionTimestamp = &now
+	p = observePod(pod, "collector")
+	if p.Ready || !p.Terminating || p.Phase != "Running" {
+		t.Fatalf("lost deletion intent: %+v", p)
+	}
+	pod.DeletionTimestamp = nil
+	for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
+		pod.Status.Phase = phase
+		if observePod(pod, "collector").Ready {
+			t.Fatalf("completed %s pod counted ready", phase)
+		}
+	}
+	pod.UID = "replacement"
+	if observePod(pod, "collector").UID != "replacement" {
+		t.Fatal("same-name replacement lost UID")
+	}
+	if observePod(pod, "absent").Ready {
+		t.Fatal("missing collector reported ready")
+	}
+}
+
+func TestDeletedPodLeavesNextSnapshot(t *testing.T) {
+	controller := true
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old", Namespace: "obs", UID: "old", OwnerReferences: []metav1.OwnerReference{{UID: "workload", Controller: &controller}}}}
+	r := fixture(t, pod)
+	ctx := context.Background()
+	pods, err := r.workloadPods(ctx, workload(), "StatefulSet")
+	if err != nil || len(pods) != 1 {
+		t.Fatalf("initial pods: %v %v", pods, err)
+	}
+	if err := r.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	replacement := pod.DeepCopy()
+	replacement.ResourceVersion = ""
+	replacement.UID = "replacement"
+	if err := r.Create(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	pods, err = r.workloadPods(ctx, workload(), "StatefulSet")
+	if err != nil || len(pods) != 1 || pods[0].UID != "replacement" {
+		t.Fatalf("old pod retained: %v %v", pods, err)
+	}
+}

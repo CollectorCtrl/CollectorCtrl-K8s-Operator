@@ -91,13 +91,16 @@ func main() {
 	}
 
 	if err = (&controllers.CollectorMonitorReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Reader:           mgr.GetAPIReader(),
-		DefaultServer:    os.Getenv("OPAMP_SERVER"),
-		TLSConfig:        tlsConfig,
-		ClusterID:        clusterID,
-		DefaultSecretKey: os.Getenv("OPAMP_SECRET_KEY"),
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Reader:              mgr.GetAPIReader(),
+		DefaultServer:       os.Getenv("OPAMP_SERVER"),
+		TLSConfig:           tlsConfig,
+		ClusterID:           clusterID,
+		DefaultSecretKey:    os.Getenv("OPAMP_SECRET_KEY"),
+		EnrollmentToken:     os.Getenv("OPAMP_ENROLL_TOKEN"),
+		AuthMode:            os.Getenv("OPAMP_AUTH_MODE"),
+		CredentialDirectory: os.Getenv("OPAMP_CREDENTIAL_DIRECTORY"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CollectorMonitor")
 		os.Exit(1)

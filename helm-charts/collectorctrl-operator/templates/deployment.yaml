@@ -1,6 +1,15 @@
 {{- if and (not .Values.rbac.clusterScoped) (not .Values.clusterID) }}
 {{- fail "clusterID is required for namespace-scoped observation" }}
 {{- end }}
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "credential persistence currently requires replicaCount=1" }}
+{{- end }}
+{{- if not (has .Values.opamp.authMode (list "enroll" "legacy")) }}
+{{- fail "opamp.authMode must be enroll or legacy" }}
+{{- end }}
+{{- if and (eq .Values.opamp.authMode "enroll") (not .Values.opamp.enrollmentSecret) (not .Values.credentialStorage.existingClaim) }}
+{{- fail "opamp.enrollmentSecret is required to enroll new workloads (or supply an existing credential claim)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +19,8 @@ metadata:
     {{- include "collectorctrl-operator.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "collectorctrl-operator.selectorLabels" . | nindent 6 }}
@@ -38,6 +49,10 @@ spec:
             - --leader-elect
             {{- end }}
           env:
+            - name: OPAMP_AUTH_MODE
+              value: {{ .Values.opamp.authMode | quote }}
+            - name: OPAMP_CREDENTIAL_DIRECTORY
+              value: /var/lib/collectorctrl/credentials
             - name: CLUSTER_ID
               value: {{ .Values.clusterID | quote }}
             {{- if not .Values.rbac.clusterScoped }}
@@ -50,18 +65,27 @@ spec:
             {{- end }}
             - name: OPAMP_SERVER
               value: {{ .Values.opamp.server | quote }}
-            {{- if .Values.opamp.existingSecret }}
+            {{- if and (eq .Values.opamp.authMode "enroll") .Values.opamp.enrollmentSecret }}
+            - name: OPAMP_ENROLL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.opamp.enrollmentSecret }}
+                  key: enrollment-token
+            {{- end }}
+            {{- if and (eq .Values.opamp.authMode "legacy") .Values.opamp.existingSecret }}
             - name: OPAMP_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.opamp.existingSecret }}
                   key: secret-key
-            {{- else if .Values.opamp.secretKey }}
+            {{- else if and (eq .Values.opamp.authMode "legacy") .Values.opamp.secretKey }}
             - name: OPAMP_SECRET_KEY
               value: {{ .Values.opamp.secretKey | quote }}
             {{- end }}
-          {{- if .Values.opampCAConfigMap }}
           volumeMounts:
+            - name: credentials
+              mountPath: /var/lib/collectorctrl
+          {{- if .Values.opampCAConfigMap }}
             - name: opamp-ca
               mountPath: /etc/collectorctrl/ca
               readOnly: true
@@ -79,8 +103,11 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-      {{- if .Values.opampCAConfigMap }}
       volumes:
+        - name: credentials
+          persistentVolumeClaim:
+            claimName: {{ .Values.credentialStorage.existingClaim | default (printf "%s-credentials" (include "collectorctrl-operator.fullname" .)) }}
+      {{- if .Values.opampCAConfigMap }}
         - name: opamp-ca
           configMap:
             name: {{ .Values.opampCAConfigMap }}
