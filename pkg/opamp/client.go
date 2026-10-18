@@ -48,6 +48,32 @@ type Observation struct {
 	DesiredPods           int         `json:"desired_pods"`
 	ReadyPods             int         `json:"ready_pods"`
 	Pods                  []PodHealth `json:"pods"`
+
+	// Fields below are additive and optional (operator v0.7+). They are
+	// inferred from the mounted configuration, never from the running process.
+	Discovery   string       `json:"discovery,omitempty"`    // "label" or "collectormonitor"
+	Stack       string       `json:"stack,omitempty"`        // group of workloads deployed together
+	StackSource string       `json:"stack_source,omitempty"` // annotation, otel-operator, helm-release, argocd-app, standalone
+	Role        string       `json:"role,omitempty"`         // agent, gateway, cluster-receiver, all-in-one, unknown
+	RoleSource  string       `json:"role_source,omitempty"`  // inferred or annotation
+	RoleReasons []string     `json:"role_reasons,omitempty"`
+	Receivers   []string     `json:"receivers,omitempty"` // component IDs used in pipelines
+	Processors  []string     `json:"processors,omitempty"`
+	Exporters   []string     `json:"exporters,omitempty"`
+	Exports     []ExportEdge `json:"exports,omitempty"`
+	ConfigError string       `json:"config_error,omitempty"` // set when the config could not be analysed
+}
+
+// ExportEdge is where one exporter sends data. Target is workload, service,
+// external, local or unresolved.
+type ExportEdge struct {
+	Exporter  string `json:"exporter"`
+	Endpoint  string `json:"endpoint"`
+	Target    string `json:"target"`
+	Namespace string `json:"namespace,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Service   string `json:"service,omitempty"`
 }
 type PodHealth struct {
 	UID         string `json:"uid,omitempty"`

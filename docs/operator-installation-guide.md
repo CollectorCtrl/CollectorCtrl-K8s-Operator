@@ -127,7 +127,7 @@ kubectl apply -f https://raw.githubusercontent.com/CollectorCtrl/CollectorCtrl/m
 Verify the ServiceAccount exists:
 
 ```bash
-kubectl get serviceaccount collectorctrl-operator -n collectorctrl
+kubectl get serviceaccount collectorctrl-operator -n collectorctrl-operator
 ```
 
 ### Step 3: Deploy the Operator
@@ -136,14 +136,14 @@ Create the namespace and pull secret:
 
 ```bash
 # Create namespace
-kubectl create namespace collectorctrl
+kubectl create namespace collectorctrl-operator
 
 # Create GHCR pull secret (replace YOUR_PAT)
 kubectl create secret docker-registry ghcr-pull-secret \
   --docker-server=ghcr.io \
   --docker-username=YOUR_GITHUB_USERNAME \
   --docker-password=YOUR_PAT \
-  -n collectorctrl
+  -n collectorctrl-operator
 
 # Apply the operator deployment
 kubectl apply -f deploy/operator.yaml
@@ -152,7 +152,7 @@ kubectl apply -f deploy/operator.yaml
 Verify the pod is running:
 
 ```bash
-kubectl get pods -n collectorctrl
+kubectl get pods -n collectorctrl-operator
 ```
 
 Expected output:
@@ -273,7 +273,7 @@ kubectl get configmap <configmap-name> -n <namespace> -o yaml
 ### 1. Check Operator Logs
 
 ```bash
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator --tail=100 -f
+kubectl logs -n collectorctrl-operator -l app.kubernetes.io/name=collectorctrl-operator --tail=100 -f
 ```
 
 Look for:
@@ -322,17 +322,17 @@ Failed to pull image "ghcr.io/rahulmhatre2505/collectorctrl-k8s-code/operator:v1
 
 ```bash
 # 1. Verify the correct image path
-kubectl get deployment collectorctrl-operator -n collectorctrl -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get deployment collectorctrl-operator -n collectorctrl-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
 
 # 2. Create GHCR pull secret with PAT (read:packages scope)
 kubectl create secret docker-registry ghcr-pull-secret \
   --docker-server=ghcr.io \
   --docker-username=YOUR_GITHUB_USERNAME \
   --docker-password=YOUR_PAT \
-  -n collectorctrl
+  -n collectorctrl-operator
 
 # 3. Patch the deployment to use the secret
-kubectl patch deployment collectorctrl-operator -n collectorctrl \
+kubectl patch deployment collectorctrl-operator -n collectorctrl-operator \
   --type='json' -p='[{"op": "add", "path": "/spec/template/spec/imagePullSecrets", "value": [{"name": "ghcr-pull-secret"}]}]'
 ```
 
@@ -516,14 +516,14 @@ if agent.K8sWorkloadName != "" {
 **Fix:** Wait for the rollout to complete, then check only the new pod's logs:
 
 ```bash
-kubectl rollout status deployment/collectorctrl-operator -n collectorctrl
+kubectl rollout status deployment/collectorctrl-operator -n collectorctrl-operator
 
 # Get the newest pod name
-kubectl get pod -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator \
+kubectl get pod -n collectorctrl-operator -l app.kubernetes.io/name=collectorctrl-operator \
   --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}'
 
 # Check only that pod's logs
-kubectl logs -n collectorctrl <newest-pod-name> --tail=100
+kubectl logs -n collectorctrl-operator <newest-pod-name> --tail=100
 ```
 
 ---
@@ -610,7 +610,7 @@ Older installs may still reference `ghcr.io/rahulmhatre2505/collectorctrl-k8s-co
 ```bash
 kubectl set image deployment/collectorctrl-operator \
   manager=ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest \
-  -n collectorctrl
+  -n collectorctrl-operator
 ```
 
 For Helm installs, the chart default `image.repository` already uses this path.

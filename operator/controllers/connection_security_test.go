@@ -26,7 +26,7 @@ func TestMonitorCannotRedirectOperatorCredential(t *testing.T) {
 	m := monitor()
 	m.Spec.OpAMPServer = "wss" + strings.TrimPrefix(endpoint.URL, "https")
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "config", Namespace: "obs"}}
-	if c, err := r.ensureConnection(context.Background(), m, workload(), "Deployment", "collector", cm); err == nil {
+	if c, err := r.ensureConnection(context.Background(), m, workload(), "Deployment", "collector", cm, connectionMeta{}); err == nil {
 		c.Stop()
 		t.Fatal("monitor redirected operator credential")
 	}
@@ -41,7 +41,7 @@ func TestMonitorCannotSelectAnotherNamespacesSecret(t *testing.T) {
 	r.ClusterID = "cluster"
 	m := monitor()
 	m.Spec.Auth.SecretRef = &v1.SecretRef{Name: "allowed-name", Namespace: "other"}
-	if _, err := r.ensureConnection(context.Background(), m, workload(), "Deployment", "collector", &corev1.ConfigMap{}); err == nil || !strings.Contains(err.Error(), "namespace") {
+	if _, err := r.ensureConnection(context.Background(), m, workload(), "Deployment", "collector", &corev1.ConfigMap{}, connectionMeta{}); err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("cross-namespace auth reference accepted: %v", err)
 	}
 }
@@ -53,7 +53,7 @@ func TestOneMonitorOwnsEachCredentialIdentity(t *testing.T) {
 	r.connections = map[string]*connection{"obs/first": {identity: "k8s://cluster/workload/collector"}}
 	m := monitor()
 	m.Name = "duplicate"
-	if _, err := r.ensureConnection(context.Background(), m, workload(), "Deployment", "collector", &corev1.ConfigMap{}); err == nil || !strings.Contains(err.Error(), "already observed") {
+	if _, err := r.ensureConnection(context.Background(), m, workload(), "Deployment", "collector", &corev1.ConfigMap{}, connectionMeta{}); err == nil || !strings.Contains(err.Error(), "already observed") {
 		t.Fatalf("duplicate identity accepted: %v", err)
 	}
 }

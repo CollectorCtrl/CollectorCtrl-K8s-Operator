@@ -6,7 +6,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: collectorctrl-operator
-  namespace: collectorctrl
+  namespace: collectorctrl-operator
   labels:
     app.kubernetes.io/name: collectorctrl-operator
     app.kubernetes.io/managed-by: kubectl
@@ -23,7 +23,7 @@ rules:
     resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["configmaps", "pods"]
+    resources: ["configmaps", "pods", "services"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors"]
@@ -51,4 +51,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: collectorctrl-operator
-    namespace: collectorctrl
+    namespace: collectorctrl-operator

@@ -90,7 +90,7 @@ func main() {
 		clusterID = string(ns.UID)
 	}
 
-	if err = (&controllers.CollectorMonitorReconciler{
+	monitors := &controllers.CollectorMonitorReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
 		Reader:              mgr.GetAPIReader(),
@@ -101,9 +101,17 @@ func main() {
 		EnrollmentToken:     os.Getenv("OPAMP_ENROLL_TOKEN"),
 		AuthMode:            os.Getenv("OPAMP_AUTH_MODE"),
 		CredentialDirectory: os.Getenv("OPAMP_CREDENTIAL_DIRECTORY"),
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err = monitors.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CollectorMonitor")
 		os.Exit(1)
+	}
+	// Label opt-in discovery: workloads labelled collectorctrl.io/observe=true.
+	for _, l := range controllers.NewLabelReconcilers(monitors) {
+		if err = l.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "label-discovery", "kind", l.Kind)
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -115,7 +123,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("starting manager", "namespace", os.Getenv("POD_NAMESPACE"), "watchNamespace", namespace, "clusterID", clusterID)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

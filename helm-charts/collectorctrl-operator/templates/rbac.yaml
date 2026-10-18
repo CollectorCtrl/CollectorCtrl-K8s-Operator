@@ -24,7 +24,7 @@ rules:
     resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["configmaps", "pods"]
+    resources: ["configmaps", "pods", "services"]
     verbs: ["get", "list", "watch"]
 {{- if .Values.rbac.authSecretNames }}
   - apiGroups: [""]
@@ -77,7 +77,7 @@ rules:
     resources: ["daemonsets", "deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["configmaps", "pods"]
+    resources: ["configmaps", "pods", "services"]
     verbs: ["get", "list", "watch"]
 {{- if .Values.rbac.authSecretNames }}
   - apiGroups: [""]

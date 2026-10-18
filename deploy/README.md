@@ -4,11 +4,11 @@ The **Helm chart** in `helm-charts/collectorctrl-operator` is the supported inst
 path; see the [main README](../README.md). These raw manifests mirror the chart's
 defaults for clusters where Helm isn't available.
 
-What gets installed in the `collectorctrl` namespace:
+What gets installed in the `collectorctrl-operator` namespace:
 
 | File | Contents |
 |------|----------|
-| `namespace.yaml` | The `collectorctrl` namespace |
+| `namespace.yaml` | The `collectorctrl-operator` namespace |
 | `crd.yaml` | The `CollectorMonitor` CRD (same as the chart's `crds/crd.yaml`) |
 | `rbac.yaml` | ServiceAccount plus read-only ClusterRole/Binding. No Secret access is needed |
 | `credentials-pvc.yaml` | Retained 128Mi claim for per-workload credentials |
@@ -44,7 +44,7 @@ The script prompts for the enrollment token (or reads `ENROLL_TOKEN`), creates t
 
 ```bash
 kubectl apply -f deploy/namespace.yaml
-kubectl create secret generic collectorctrl-auth -n collectorctrl \
+kubectl create secret generic collectorctrl-auth -n collectorctrl-operator \
   --from-literal=enrollment-token=cce_YOUR_TOKEN
 kubectl apply -f deploy/crd.yaml
 kubectl apply -f deploy/rbac.yaml
@@ -53,7 +53,7 @@ kubectl apply -f deploy/credentials-pvc.yaml
 kubectl apply -f deploy/deployment.yaml
 ```
 
-For a private CA, create `kubectl create configmap collectorctrl-opamp-ca -n collectorctrl --from-file=ca.crt=./ca.pem`
+For a private CA, create `kubectl create configmap collectorctrl-opamp-ca -n collectorctrl-operator --from-file=ca.crt=./ca.pem`
 and uncomment the `OPAMP_CA_FILE` lines in `deployment.yaml`.
 
 ## Monitor a collector
@@ -92,14 +92,14 @@ New installs should use enrollment directly.
 | Symptom | Check |
 |---------|-------|
 | Pod `CreateContainerConfigError` | Secret `collectorctrl-auth` with key `enrollment-token` exists in `collectorctrl` |
-| Pod `Pending` | The credential claim is bound (`kubectl get pvc -n collectorctrl`) |
+| Pod `Pending` | The credential claim is bound (`kubectl get pvc -n collectorctrl-operator`) |
 | TLS or `x509` errors in logs | Endpoint hostname matches the certificate; supply the CA |
 | Monitor error "opampServer must match" | `spec.opampServer` equals the observer's `OPAMP_SERVER` exactly |
 | Monitor reports ambiguous workload or ConfigMap | Narrow `matchLabels`, or set `configMapSelector.name`/`key` |
 | Workload re-enrolment fails after revoke | Reset the identity under Agent Enrollment; see the main README |
 
 ```bash
-kubectl logs -n collectorctrl -l app.kubernetes.io/name=collectorctrl-operator
+kubectl logs -n collectorctrl-operator -l app.kubernetes.io/name=collectorctrl-operator
 ```
 
 The observer exposes metrics on `:8080/metrics` and health on `:8081`.
