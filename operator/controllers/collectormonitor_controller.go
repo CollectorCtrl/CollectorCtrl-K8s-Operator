@@ -56,7 +56,7 @@ type connection struct {
 // +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=collectorctrl.io,resources=collectormonitors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets;deployments;statefulsets;replicasets,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=configmaps;pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps;pods;services,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -68,28 +68,42 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, err
 	}
-	fail := func(condition string, err error) (ctrl.Result, error) {
+	requeue, condition, err := r.observe(ctx, monitor, discoveryCollectorMonitor)
+	if err != nil {
 		r.closeConnection(req.String())
-		monitor.Status.Phase = "Error"
-		monitor.Status.AgentCount, monitor.Status.HealthyAgents = 0, 0
-		monitor.Status.ConfigMapRef = nil
-		r.condition(monitor, condition, metav1.ConditionFalse, "ObservationFailed", err.Error())
-		r.condition(monitor, "Active", metav1.ConditionFalse, "ObservationFailed", err.Error())
-		r.condition(monitor, "OpAMPConnected", metav1.ConditionFalse, "ObservationFailed", "Observation connection stopped")
+		r.markFailed(monitor, condition, err)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, monitor)
 	}
+	return ctrl.Result{RequeueAfter: requeue}, r.Status().Update(ctx, monitor)
+}
+
+// markFailed records an observation failure on the monitor's in-memory status.
+func (r *CollectorMonitorReconciler) markFailed(monitor *v1.CollectorMonitor, condition string, err error) {
+	monitor.Status.Phase = "Error"
+	monitor.Status.AgentCount, monitor.Status.HealthyAgents = 0, 0
+	monitor.Status.ConfigMapRef = nil
+	r.condition(monitor, condition, metav1.ConditionFalse, "ObservationFailed", err.Error())
+	r.condition(monitor, "Active", metav1.ConditionFalse, "ObservationFailed", err.Error())
+	r.condition(monitor, "OpAMPConnected", metav1.ConditionFalse, "ObservationFailed", "Observation connection stopped")
+}
+
+// observe resolves the monitored workload, its collector container and mounted
+// config, analyses the config, and reports one observation. It updates the
+// monitor's in-memory status; callers decide whether to persist it. On failure
+// it returns the condition type that failed. The caller closes the connection.
+func (r *CollectorMonitorReconciler) observe(ctx context.Context, monitor *v1.CollectorMonitor, discovery string) (time.Duration, string, error) {
 	workload, kind, err := r.discoverWorkload(ctx, monitor)
 	if err != nil {
-		return fail("Discovered", err)
+		return 0, "Discovered", err
 	}
 	r.condition(monitor, "Discovered", metav1.ConditionTrue, "WorkloadResolved", kind+"/"+workload.GetName())
 	container, err := collectorContainer(monitor, workload)
 	if err != nil {
-		return fail("ConfigMapResolved", err)
+		return 0, "ConfigMapResolved", err
 	}
 	cm, configKey, err := r.discoverConfig(ctx, monitor, workload, container)
 	if err != nil {
-		return fail("ConfigMapResolved", err)
+		return 0, "ConfigMapResolved", err
 	}
 	monitor.Status.ConfigMapRef = &v1.ConfigMapReference{Name: cm.Name, Namespace: cm.Namespace, Key: configKey}
 	r.condition(monitor, "ConfigMapResolved", metav1.ConditionTrue, "MountedConfigResolved", "Observed mounted ConfigMap; runtime activation is unverified")
@@ -98,13 +112,14 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if monitor.Spec.EmergencyMode.Enabled != nil && *monitor.Spec.EmergencyMode.Enabled {
 		r.condition(monitor, "ControlEnabled", metav1.ConditionFalse, "ObservationOnly", "Emergency control is unsupported in this observation release")
 	}
-	c, err := r.ensureConnection(ctx, monitor, workload, kind, container, cm)
+	insight := r.analyse(ctx, monitor, workload, kind, cm.Data[configKey])
+	c, err := r.ensureConnection(ctx, monitor, workload, kind, container, cm, connectionMeta{Discovery: discovery, Stack: insight.stack, Role: insight.role.Name})
 	if err != nil {
-		return fail("OpAMPConnected", err)
+		return 0, "OpAMPConnected", err
 	}
 	pods, err := r.workloadPods(ctx, workload, kind)
 	if err != nil {
-		return fail("HealthReported", err)
+		return 0, "HealthReported", err
 	}
 	observation := opamp.Observation{
 		Source: "kubernetes-api", RuntimeVerified: false, ObservedAt: time.Now().UTC(),
@@ -114,6 +129,14 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ConfigMapName: cm.Name, ConfigMapKey: configKey, ResourceVersion: cm.ResourceVersion,
 		ConfigHash:  fmt.Sprintf("%x", sha256.Sum256([]byte(cm.Data[configKey]))),
 		DesiredPods: desiredPods(workload), Pods: make([]opamp.PodHealth, 0, len(pods)),
+		Discovery: discovery, Stack: insight.stack, StackSource: insight.stackSource,
+		Role: insight.role.Name, RoleSource: insight.roleSource, RoleReasons: insight.role.Reasons,
+		Exports: insight.exports, ConfigError: insight.configError,
+	}
+	if insight.analysis != nil {
+		observation.Receivers = insight.analysis.Receivers
+		observation.Processors = insight.analysis.Processors
+		observation.Exporters = insight.analysis.Exporters
 	}
 	if monitor.Spec.ReportConfig {
 		observation.ConfigYAML = cm.Data[configKey]
@@ -128,7 +151,7 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	monitor.Status.AgentCount = int32(len(pods))
 	monitor.Status.HealthyAgents = int32(observation.ReadyPods)
 	if err := c.Report(observation); err != nil {
-		return fail("HealthReported", err)
+		return 0, "HealthReported", err
 	}
 	r.condition(monitor, "HealthReported", metav1.ConditionUnknown, "DeliveryUnconfirmed", "API observation prepared; server receipt is not acknowledged")
 	connected := c.Connected()
@@ -147,7 +170,7 @@ func (r *CollectorMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if connected {
 		r.condition(monitor, "Active", metav1.ConditionTrue, "Observing", "Observing existing collector workload without deployment control")
 	}
-	return ctrl.Result{RequeueAfter: reportInterval(monitor)}, r.Status().Update(ctx, monitor)
+	return reportInterval(monitor), "", nil
 }
 
 func reportInterval(monitor *v1.CollectorMonitor) time.Duration {
@@ -429,7 +452,15 @@ func (r *CollectorMonitorReconciler) workloadPods(ctx context.Context, w client.
 	return result, nil
 }
 
-func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1.CollectorMonitor, w client.Object, kind, container string, cm *corev1.ConfigMap) (*opamp.Client, error) {
+// connectionMeta carries descriptive agent attributes. A change reconnects the
+// agent so the server sees current attributes.
+type connectionMeta struct {
+	Discovery string
+	Stack     string
+	Role      string
+}
+
+func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1.CollectorMonitor, w client.Object, kind, container string, cm *corev1.ConfigMap, meta connectionMeta) (*opamp.Client, error) {
 	endpoint, err := opamp.ApprovedEndpoint(r.DefaultServer, m.Spec.OpAMPServer)
 	if err != nil {
 		return nil, err
@@ -482,7 +513,7 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 	identity := fmt.Sprintf("k8s://%s/%s/%s", r.ClusterID, w.GetUID(), container)
 	spec, _ := json.Marshal(m.Spec)
 	// ConfigMap content changes are sent as observations without reconnecting.
-	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", spec, identity, clusterName, cm.Name, secretVersion, endpoint, mode, token)))
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s", spec, identity, clusterName, cm.Name, secretVersion, endpoint, mode, token, meta.Discovery, meta.Stack, meta.Role)))
 	key := m.Namespace + "/" + m.Name
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -490,9 +521,16 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 		r.connections = map[string]*connection{}
 	}
 	for owner, current := range r.connections {
-		if owner != key && current.identity == identity {
-			return nil, fmt.Errorf("workload/container is already observed by %s; use one monitor per identity", owner)
+		if owner == key || current.identity != identity {
+			continue
 		}
+		// An explicit CollectorMonitor takes precedence over label discovery.
+		if isLabelKey(owner) && !isLabelKey(key) {
+			current.client.Stop()
+			delete(r.connections, owner)
+			continue
+		}
+		return nil, fmt.Errorf("workload/container is already observed by %s; use one monitor per identity", owner)
 	}
 	if current := r.connections[key]; current != nil {
 		if current.fingerprint == fingerprint {
@@ -511,6 +549,11 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 			"k8s.configmap.name": cm.Name, "collectorctrl.management.mode": "observe",
 			"collectorctrl.health.source": "container-readiness",
 		},
+	}
+	for k, v := range map[string]string{"collectorctrl.discovery": meta.Discovery, "collectorctrl.stack": meta.Stack, "collectorctrl.role": meta.Role} {
+		if v != "" {
+			cfg.Labels[k] = v
+		}
 	}
 	if mode == "legacy" {
 		cfg.LegacySecret = token

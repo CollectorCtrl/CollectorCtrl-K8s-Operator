@@ -58,6 +58,11 @@ jobs:
       - name: Go mod tidy
         run: go mod tidy
 
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test -race ./...
+
       - name: Build operator binary (test)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s -w' -o /tmp/operator-test ./cmd/operator

@@ -2,7 +2,7 @@
 # Adjust namespace, workload, container and ConfigMap to match your deployment.
 #
 # Authentication comes from the observer's own enrollment token
-# (Secret collectorctrl-auth in the collectorctrl namespace), so no per-monitor
+# (Secret collectorctrl-auth in the collectorctrl-operator namespace), so no per-monitor
 # Secret is needed. spec.opampServer must exactly match the observer's OPAMP_SERVER.
 
 apiVersion: collectorctrl.io/v1alpha1

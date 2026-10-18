@@ -11,6 +11,14 @@ before onboarding.
 
 ## Current behavior
 
+- A collector workload opts in with the label `collectorctrl.io/observe: "true"`.
+  The observer builds the monitor in memory; no CollectorMonitor is needed.
+  A CollectorMonitor for the same workload takes precedence over the label.
+- Each observation now carries an inferred role (agent, gateway,
+  cluster-receiver, all-in-one, unknown) with the reasons, a stack (the workloads
+  deployed together), the pipeline components in use, and where each exporter
+  sends data. These are inferred from the mounted configuration, never from
+  workload names, and can be overridden with annotations.
 - One CollectorMonitor selects exactly one Deployment, DaemonSet, or StatefulSet.
   Ambiguous selectors report an error instead of selecting an arbitrary workload.
 - The observer resolves ConfigMaps mounted by the selected collector container,
@@ -42,7 +50,7 @@ docker build -f Dockerfile.operator -t YOUR_REGISTRY/collectorctrl-observer:obse
 docker push YOUR_REGISTRY/collectorctrl-observer:observe-dev
 
 helm upgrade --install collectorctrl-observer ./helm-charts/collectorctrl-operator \
-  --namespace collectorctrl-system --create-namespace \
+  --namespace collectorctrl-operator --create-namespace \
   --set image.repository=YOUR_REGISTRY/collectorctrl-observer \
   --set image.tag=observe-dev \
   --set opamp.server=wss://collectorctrl.example.internal:4320/v1/opamp \
@@ -92,6 +100,46 @@ For an internal CA, create a ConfigMap containing ca.crt in the operator namespa
 and set opampCAConfigMap to its name. The certificate must cover the endpoint
 hostname. Installations previously relying on skipped verification must configure
 trust before upgrading.
+
+## Opt in an existing collector with a label
+
+Add one label to the collector workload, usually through your Helm values
+(most collector charts expose workload `labels`). Your CI/CD deploys it as usual.
+
+```yaml
+labels:
+  collectorctrl.io/observe: "true"
+```
+
+Optional annotations on the same workload, only when needed:
+
+| Annotation | Use |
+| --- | --- |
+| `collectorctrl.io/container` | Collector container name in a multi-container pod |
+| `collectorctrl.io/config-map` / `collectorctrl.io/config-key` | Pick the ConfigMap or key when several are mounted |
+| `collectorctrl.io/stack` | Group workloads into a named stack (default: Helm release, owning OpenTelemetryCollector, Argo CD app, else the workload) |
+| `collectorctrl.io/role` | Override the inferred role: `agent`, `gateway`, `cluster-receiver`, `all-in-one`, `unknown` |
+| `collectorctrl.io/report-config` | `"true"` uploads the config YAML (off by default; review secrets first) |
+| `collectorctrl.io/report-interval` | Reporting interval, e.g. `60s` (default 30s, clamped to 5s–1h) |
+
+The label-discovered collector reports to the operator's configured
+`OPAMP_SERVER` with the operator's enrollment token. Remove the label to stop
+observing it. Errors appear in the operator log, because there is no
+CollectorMonitor status to write to.
+
+**Role inference** uses only components referenced by `service.pipelines`:
+`kubeletstats`, `hostmetrics`, `journald` or `filelog` on `/var/log/pods` mean
+agent; `k8s_cluster`, `k8sobjects`, `k8s_events` mean cluster receiver;
+`tail_sampling`, `groupbytrace` or the `loadbalancing` exporter mean gateway;
+several of these mean all-in-one. With none of them, an OTLP-only DaemonSet is an
+agent and an OTLP-only Deployment a gateway. Workload kind never overrides
+configuration evidence.
+
+**Topology**: exporter endpoints are matched to Services in the cluster
+(`svc`, `svc.ns`, `svc.ns.svc[.cluster.local]`) and from there to the one
+workload whose pod labels the Service selects. Other hosts are reported as
+external; `${env:...}` values are reported as unresolved. This needs `get/list/watch`
+on Services, which the chart now grants.
 
 ## Monitor an existing collector
 
@@ -153,8 +201,8 @@ server acknowledgement.
 
 Observation works at the rendered workload level, independent of the chart that
 created it. It does not establish which Git file owns that workload, promise
-compatibility with every collector distribution, or automatically discover every
-collector in the cluster. Create one monitor per workload. A sidecar injected into
+compatibility with every collector distribution, or discover collectors that have
+not opted in. Use one label (or one monitor) per workload. A sidecar injected into
 a pod without a corresponding workload template ConfigMap mount needs a future
 upstream-operator adapter; it is not supported by template discovery.
 

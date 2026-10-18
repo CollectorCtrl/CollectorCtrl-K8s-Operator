@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-NAMESPACE=collectorctrl
+NAMESPACE=collectorctrl-operator
 PLACEHOLDER="wss://collectorctrl.example.internal:4320/v1/opamp"
 
 if [[ -z "${OPAMP_SERVER:-}" ]]; then
