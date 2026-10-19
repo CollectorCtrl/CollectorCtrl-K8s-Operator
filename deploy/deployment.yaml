@@ -69,6 +69,12 @@ spec:
             - name: CLUSTER_ID
               # Empty: derived from the kube-system namespace UID.
               value: ""
+            - name: CLUSTER_NAME
+              # Name shown in CollectorCtrl; empty uses the cluster ID.
+              value: ""
+            - name: CLUSTER_OBSERVER
+              # "false" disables the cluster connection and candidate list.
+              value: "true"
             # Private CA: create ConfigMap collectorctrl-opamp-ca (key ca.crt),
             # then uncomment this env var and the opamp-ca mount and volume.
             # - name: OPAMP_CA_FILE

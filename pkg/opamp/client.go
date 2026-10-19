@@ -283,6 +283,71 @@ func (c *Client) Report(o Observation) error {
 	}
 	return err
 }
+
+// ClusterInventory is the cluster-scoped snapshot sent on the operator's
+// cluster connection (collectorctrl/k8s_cluster_inventory_v1). It lists
+// workloads that look like collectors from metadata only (image names); no
+// configuration is read from workloads that have not opted in.
+type ClusterInventory struct {
+	Source                string               `json:"source"` // always "kubernetes-api"
+	ObservedAt            time.Time            `json:"observed_at"`
+	ReportIntervalSeconds int64                `json:"report_interval_seconds"`
+	ClusterID             string               `json:"cluster_id"`
+	ClusterName           string               `json:"cluster_name,omitempty"`
+	Collectors            []CollectorCandidate `json:"collectors"`
+	Truncated             bool                 `json:"truncated,omitempty"`
+}
+
+// CollectorCandidate is one collector-looking workload. OptedIn and Monitored
+// say whether it is already observed (label or CollectorMonitor).
+type CollectorCandidate struct {
+	Namespace   string `json:"namespace"`
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	UID         string `json:"uid"`
+	Container   string `json:"container"`
+	Image       string `json:"image"`
+	Stack       string `json:"stack,omitempty"`
+	StackSource string `json:"stack_source,omitempty"`
+	OptedIn     bool   `json:"opted_in,omitempty"`
+	Monitored   bool   `json:"monitored,omitempty"`
+}
+
+// ReportInventory sends a cluster inventory snapshot. It is a no-op while the
+// transport is disconnected; the next interval sends a fresh snapshot.
+func (c *Client) ReportInventory(inv ClusterInventory) error {
+	if c.client == nil {
+		return fmt.Errorf("client not started")
+	}
+	c.mu.RLock()
+	authError := c.authError
+	c.mu.RUnlock()
+	if authError != nil {
+		return authError
+	}
+	if err := c.sendCredentialAck(); err != nil {
+		if errors.Is(err, opampcltypes.ErrCustomMessagePending) {
+			return nil
+		}
+		return err
+	}
+	if err := c.client.SetHealth(&protobufs.ComponentHealth{Healthy: true, Status: fmt.Sprintf("Cluster inventory: %d collector-like workloads", len(inv.Collectors))}); err != nil {
+		return err
+	}
+	if !c.Connected() {
+		return nil
+	}
+	payload, err := json.Marshal(inv)
+	if err != nil {
+		return err
+	}
+	_, err = c.client.SendCustomMessage(&protobufs.CustomMessage{Capability: "collectorctrl", Type: "k8s_cluster_inventory_v1", Data: payload})
+	if errors.Is(err, opampcltypes.ErrCustomMessagePending) {
+		return nil
+	}
+	return err
+}
+
 func keyVal(k, v string) *protobufs.KeyValue {
 	return &protobufs.KeyValue{Key: k, Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: v}}}
 }
