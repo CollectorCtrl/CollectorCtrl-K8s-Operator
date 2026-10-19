@@ -1,6 +1,6 @@
 # Superseded installation instructions
 
-The observation release has different permissions, TLS requirements, and no emergency control. Follow [the current installation guide](../README.md) for this checkout. The material below describes the earlier prototype and is retained for historical context only.
+The observation release has different permissions, TLS requirements, and no emergency control. Follow [the current installation guide](../README.md) for this checkout. For the current architecture, see the [High-Level Design](architecture/HLD.md) and [Low-Level Design](architecture/LLD.md). The material below describes the earlier prototype and is retained for historical context only.
 
 ---
 

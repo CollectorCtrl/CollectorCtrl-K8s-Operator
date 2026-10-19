@@ -9,6 +9,22 @@ v0.6.0-beta). Use the published `latest` image built from `main`, or build your
 own from this checkout. Deploy the matching CollectorCtrl server and frontend
 before onboarding.
 
+```mermaid
+flowchart LR
+    T["Helm / OTel Operator /<br/>Argo CD / CI"] -- "own & deploy" --> C["Collector workloads<br/>DaemonSet · Deployment · StatefulSet"]
+    O["CollectorCtrl observer<br/>1 replica · read-only"] -- "watch (get/list/watch)" --> C
+    O == "outbound wss:// OpAMP<br/>one identity per workload" ==> S["CollectorCtrl server + UI"]
+```
+
+## Documentation
+
+| Document | Read it for |
+|----------|-------------|
+| [High-Level Design](docs/architecture/HLD.md) | What the observer does and doesn't do, its building blocks, opt-in paths, security model, deployment view |
+| [Low-Level Design](docs/architecture/LLD.md) | Reconcile loops, discovery and config-key algorithms, role/stack/export inference, OpAMP auth flow, wire contracts, RBAC, failure handling, tests |
+| [kubectl install](deploy/README.md) | Installing without Helm |
+| This README | Install with Helm, opt in collectors, compatibility and limits |
+
 ## Current behavior
 
 - A collector workload opts in with the label `collectorctrl.io/observe: "true"`.
