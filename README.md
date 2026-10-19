@@ -149,6 +149,20 @@ workload whose pod labels the Service selects. Other hosts are reported as
 external; `${env:...}` values are reported as unresolved. This needs `get/list/watch`
 on Services, which the chart now grants.
 
+## Cluster connection and likely collectors
+
+Besides one connection per observed collector, the operator keeps one
+connection per cluster (identity `k8s://<cluster-id>/cluster-observer`). Every
+minute it sends `k8s_cluster_inventory_v1`: the Deployments, DaemonSets and
+StatefulSets whose container image names a collector distribution
+(opentelemetry-collector, otelcol, splunk/coralogix/AWS/Elastic/Dynatrace/New
+Relic collector builds, Grafana Alloy), marked as opted in, monitored, or not
+yet observed. Only workload metadata and image names are read; configuration
+of workloads that have not opted in is never read. The UI uses it to suggest
+which collectors to opt in. Set `clusterObserver.enabled=false` (Helm) or
+`CLUSTER_OBSERVER=false` to turn it off, and `clusterName` / `CLUSTER_NAME` to
+name the cluster. The connection uses one enrollment use.
+
 ## Monitor an existing collector
 
 ```yaml

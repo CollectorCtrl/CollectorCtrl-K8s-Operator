@@ -114,6 +114,15 @@ func main() {
 		}
 	}
 
+	// Cluster connection: one per cluster, for cluster-scoped data such as the
+	// list of collector-like workloads that have not opted in. Metadata only.
+	if os.Getenv("CLUSTER_OBSERVER") != "false" {
+		if err := mgr.Add(&controllers.ClusterObserver{Monitors: monitors, ClusterName: os.Getenv("CLUSTER_NAME"), Interval: time.Minute}); err != nil {
+			setupLog.Error(err, "unable to add cluster observer")
+			os.Exit(1)
+		}
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)

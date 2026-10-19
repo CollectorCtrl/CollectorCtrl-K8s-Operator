@@ -66,3 +66,23 @@ func TestObservationUsesCustomSnapshotNotEffectiveConfig(t *testing.T) {
 		t.Fatal("server pod count contract mismatch")
 	}
 }
+
+func TestClusterInventoryUsesItsOwnContract(t *testing.T) {
+	capture := &captureClient{}
+	c := &Client{client: capture, connected: true}
+	inv := ClusterInventory{Source: "kubernetes-api", ClusterID: "c", Collectors: []CollectorCandidate{{Namespace: "obs", Kind: "DaemonSet", Name: "agent", Image: "otelcol:1"}}}
+	if err := c.ReportInventory(inv); err != nil {
+		t.Fatal(err)
+	}
+	if capture.message == nil || capture.message.Type != "k8s_cluster_inventory_v1" || capture.message.Capability != "collectorctrl" {
+		t.Fatalf("inventory not sent through its versioned contract: %+v", capture.message)
+	}
+	var decoded ClusterInventory
+	if err := json.Unmarshal(capture.message.Data, &decoded); err != nil || len(decoded.Collectors) != 1 || decoded.Collectors[0].Name != "agent" {
+		t.Fatalf("inventory payload: %v %+v", err, decoded)
+	}
+	disconnected := &captureClient{}
+	if err := (&Client{client: disconnected}).ReportInventory(inv); err != nil || disconnected.message != nil {
+		t.Fatal("inventory sent while disconnected")
+	}
+}
