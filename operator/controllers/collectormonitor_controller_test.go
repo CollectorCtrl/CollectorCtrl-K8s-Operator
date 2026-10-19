@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	v1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
@@ -189,5 +190,26 @@ func TestDeletedPodLeavesNextSnapshot(t *testing.T) {
 	pods, err = r.workloadPods(ctx, workload(), "StatefulSet")
 	if err != nil || len(pods) != 1 || pods[0].UID != "replacement" {
 		t.Fatalf("old pod retained: %v %v", pods, err)
+	}
+}
+
+func TestConfigKeyWithoutYAMLSuffix(t *testing.T) {
+	// Vendor charts store the config as "relay" and mount it as relay.yaml.
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "config", Namespace: "obs"}, Data: map[string]string{"relay": "receivers: {}", "notes": "x"}}
+	r := fixture(t, cm)
+	w := workload()
+	w.Spec.Template.Spec.Volumes[0].ConfigMap.Items = []corev1.KeyToPath{{Key: "relay", Path: "relay.yaml"}}
+	if _, key, err := r.discoverConfig(context.Background(), monitor(), w, "collector"); err != nil || key != "relay" {
+		t.Fatalf("item-mounted key not chosen: %q %v", key, err)
+	}
+	single := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "config", Namespace: "obs"}, Data: map[string]string{"collector": "receivers: {}"}}
+	r = fixture(t, single)
+	if _, key, err := r.discoverConfig(context.Background(), monitor(), workload(), "collector"); err != nil || key != "collector" {
+		t.Fatalf("single key not chosen: %q %v", key, err)
+	}
+	two := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "config", Namespace: "obs"}, Data: map[string]string{"a": "x", "b": "y"}}
+	r = fixture(t, two)
+	if _, _, err := r.discoverConfig(context.Background(), monitor(), workload(), "collector"); err == nil || !strings.Contains(err.Error(), AnnConfigKey) {
+		t.Fatalf("ambiguous keys guessed: %v", err)
 	}
 }

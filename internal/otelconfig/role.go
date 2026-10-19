@@ -25,7 +25,9 @@ type Role struct {
 var (
 	nodeReceivers    = []string{"kubeletstats", "hostmetrics", "journald"}
 	clusterReceivers = []string{"k8s_cluster", "k8sobjects", "k8s_events"}
-	gatewayProcs     = []string{"tail_sampling", "groupbytrace"}
+	// groupbytrace is deliberately absent: node agents use it too (for example
+	// Coralogix's transaction grouping), so it does not indicate a gateway.
+	gatewayProcs     = []string{"tail_sampling"}
 	gatewayExporters = []string{"loadbalancing"}
 )
 
