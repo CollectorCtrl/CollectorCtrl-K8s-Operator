@@ -22,6 +22,9 @@ type Analysis struct {
 	Receivers  []string
 	Processors []string
 	Exporters  []string
+	// Connectors join pipelines inside the collector. They appear in pipeline
+	// receiver and exporter lists but are neither, so they are listed apart.
+	Connectors []string
 
 	receiverCfg map[string]any
 	exporterCfg map[string]any
@@ -42,20 +45,29 @@ func Parse(body string) (*Analysis, error) {
 	if len(pipelines) == 0 {
 		return nil, fmt.Errorf("collector config has no service.pipelines")
 	}
-	recv, proc, exp := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	connectors := asMap(doc["connectors"])
+	recv, proc, exp, conn := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, p := range pipelines {
 		pm := asMap(p)
 		for _, id := range asStrings(pm["receivers"]) {
+			if _, ok := connectors[id]; ok {
+				conn[id] = true
+				continue
+			}
 			recv[id] = true
 		}
 		for _, id := range asStrings(pm["processors"]) {
 			proc[id] = true
 		}
 		for _, id := range asStrings(pm["exporters"]) {
+			if _, ok := connectors[id]; ok {
+				conn[id] = true
+				continue
+			}
 			exp[id] = true
 		}
 	}
-	a.Receivers, a.Processors, a.Exporters = sortedKeys(recv), sortedKeys(proc), sortedKeys(exp)
+	a.Receivers, a.Processors, a.Exporters, a.Connectors = sortedKeys(recv), sortedKeys(proc), sortedKeys(exp), sortedKeys(conn)
 	return a, nil
 }
 
@@ -63,6 +75,11 @@ func Parse(body string) (*Analysis, error) {
 func ComponentType(id string) string {
 	return strings.TrimSpace(strings.SplitN(id, "/", 2)[0])
 }
+
+// normalType makes component types comparable across the original names and
+// the snake_case aliases newer collectors and vendor charts use
+// (kubeletstats / kubelet_stats, otlphttp / otlp_http, k8s_cluster / k8scluster).
+func normalType(t string) string { return strings.ReplaceAll(strings.ToLower(t), "_", "") }
 
 func (a *Analysis) hasReceiverType(types ...string) []string {
 	return matchTypes(a.Receivers, types)
@@ -77,9 +94,9 @@ func (a *Analysis) hasExporterType(types ...string) []string {
 func matchTypes(ids []string, types []string) []string {
 	var out []string
 	for _, id := range ids {
-		t := ComponentType(id)
+		t := normalType(ComponentType(id))
 		for _, want := range types {
-			if t == want {
+			if t == normalType(want) {
 				out = append(out, id)
 			}
 		}

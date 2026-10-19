@@ -26,7 +26,7 @@ spec:
       component: agent-collector
   configMapSelector:
     name: coralogix-opentelemetry-agent
-    key: relay.yaml
+    key: relay
   opampServer: "wss://collectorctrl.example.internal:4320/v1/opamp"
   reportConfig: false
   healthCheck:
@@ -49,7 +49,7 @@ spec:
       app.kubernetes.io/component: otel-collector
   configMapSelector:
     name: coralogix-opentelemetry-collector
-    key: relay.yaml
+    key: relay
   opampServer: "wss://collectorctrl.example.internal:4320/v1/opamp"
   reportConfig: false
   healthCheck:

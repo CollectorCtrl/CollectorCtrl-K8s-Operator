@@ -174,3 +174,48 @@ service:
 		t.Error("loadbalancing exporter should mark a gateway")
 	}
 }
+
+func TestSnakeCaseAliasesAndConnectors(t *testing.T) {
+	body := `
+receivers:
+  kubelet_stats: {}
+  host_metrics: {}
+  otlp: {}
+connectors:
+  spanmetrics: {}
+processors:
+  group_by_trace: {}
+exporters:
+  otlp_http:
+    traces_endpoint: https://ingest.us0.example.com/v2/trace/otlp
+    metrics_endpoint: https://ingest.us0.example.com/v2/datapoint/otlp
+  signalfx:
+    ingest_url: http://gateway:9943
+    api_url: http://gateway:6060
+service:
+  pipelines:
+    traces: {receivers: [otlp], processors: [group_by_trace], exporters: [otlp_http, spanmetrics]}
+    metrics: {receivers: [kubelet_stats, host_metrics, spanmetrics], exporters: [signalfx]}
+`
+	a := mustParse(t, body)
+	if !reflect.DeepEqual(a.Connectors, []string{"spanmetrics"}) {
+		t.Fatalf("connectors: %v", a.Connectors)
+	}
+	for _, id := range append(a.Receivers, a.Exporters...) {
+		if id == "spanmetrics" {
+			t.Fatal("connector listed as receiver or exporter")
+		}
+	}
+	role := InferRole(a, "DaemonSet")
+	if role.Name != RoleAgent || !strings.Contains(role.Reasons[0], "kubelet_stats") {
+		t.Fatalf("snake_case agent receivers not recognised: %+v", role)
+	}
+	hosts := map[string]bool{}
+	for _, e := range a.ExportEndpoints() {
+		hosts[e.Exporter+"|"+e.Host+":"+e.Port] = true
+	}
+	want := map[string]bool{"otlp_http|ingest.us0.example.com:": true, "signalfx|gateway:9943": true}
+	if !reflect.DeepEqual(hosts, want) {
+		t.Fatalf("endpoints: %v", hosts)
+	}
+}

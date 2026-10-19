@@ -130,10 +130,18 @@ CollectorMonitor status to write to.
 **Role inference** uses only components referenced by `service.pipelines`:
 `kubeletstats`, `hostmetrics`, `journald` or `filelog` on `/var/log/pods` mean
 agent; `k8s_cluster`, `k8sobjects`, `k8s_events` mean cluster receiver;
-`tail_sampling`, `groupbytrace` or the `loadbalancing` exporter mean gateway;
-several of these mean all-in-one. With none of them, an OTLP-only DaemonSet is an
-agent and an OTLP-only Deployment a gateway. Workload kind never overrides
-configuration evidence.
+`tail_sampling` or the `loadbalancing` exporter mean gateway; several of these
+mean all-in-one. With none of them, an OTLP-only DaemonSet is an agent and an
+OTLP-only Deployment a gateway. Workload kind never overrides configuration
+evidence. Snake_case component names (`kubelet_stats`, `k8s_cluster`,
+`otlp_http`) are treated like the originals, and connectors are not counted as
+receivers or exporters. Expectations for real vendor charts (upstream, Splunk,
+Coralogix, AWS ADOT) live in `operator/controllers/vendorcharts_test.go`;
+regenerate the fixtures with `hack/render-vendor-charts.sh`.
+
+**Config key**: without `config-key`, the observer picks a key named
+`*.yaml`/`*.yml`, else the key mounted to a `*.yaml` path (vendor charts store
+`relay` and mount it as `relay.yaml`), else the only key in the ConfigMap.
 
 **Topology**: exporter endpoints are matched to Services in the cluster
 (`svc`, `svc.ns`, `svc.ns.svc[.cluster.local]`) and from there to the one

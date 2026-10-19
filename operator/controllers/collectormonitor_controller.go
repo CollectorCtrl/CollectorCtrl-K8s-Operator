@@ -344,16 +344,10 @@ func (r *CollectorMonitorReconciler) discoverConfig(ctx context.Context, m *v1.C
 		key = m.Spec.ConfigMapSelector.Key
 	}
 	if key == "" {
-		var keys []string
-		for k := range cm.Data {
-			if strings.HasSuffix(k, ".yaml") || strings.HasSuffix(k, ".yml") {
-				keys = append(keys, k)
-			}
+		var err error
+		if key, err = configKey(cm, t, mounted); err != nil {
+			return nil, "", err
 		}
-		if len(keys) != 1 {
-			return nil, "", fmt.Errorf("ConfigMap %s has %d YAML keys; specify configMapSelector.key", cm.Name, len(keys))
-		}
-		key = keys[0]
 	}
 	if body, ok := cm.Data[key]; !ok || strings.TrimSpace(body) == "" {
 		return nil, "", fmt.Errorf("ConfigMap %s has no non-empty key %q", cm.Name, key)
@@ -621,4 +615,73 @@ func (r *CollectorMonitorReconciler) mapNamespace(ctx context.Context, obj clien
 		result = append(result, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: m.Namespace, Name: m.Name}})
 	}
 	return result
+}
+
+func isYAMLName(name string) bool {
+	return strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
+}
+
+// configKey picks the collector config key when none is configured. Most
+// collector charts (upstream, Splunk, Coralogix, ADOT) store the config under a
+// key such as "relay" and give it a .yaml name only at mount time, so the order
+// is: keys named *.yaml/*.yml; keys mounted through volume items to a
+// *.yaml/*.yml path; the only key of a single-key ConfigMap. Anything else is
+// ambiguous and must be configured explicitly.
+func configKey(cm *corev1.ConfigMap, t *corev1.PodTemplateSpec, mounted map[string]bool) (string, error) {
+	ambiguous := func(n int) error {
+		return fmt.Errorf("ConfigMap %s has %d candidate config keys; set configMapSelector.key or the %s annotation", cm.Name, n, AnnConfigKey)
+	}
+	var named []string
+	for k := range cm.Data {
+		if isYAMLName(k) {
+			named = append(named, k)
+		}
+	}
+	switch len(named) {
+	case 1:
+		return named[0], nil
+	case 0:
+	default:
+		return "", ambiguous(len(named))
+	}
+	itemKeys := map[string]bool{}
+	addItems := func(name string, items []corev1.KeyToPath) {
+		if name != cm.Name {
+			return
+		}
+		for _, item := range items {
+			if _, ok := cm.Data[item.Key]; ok && isYAMLName(item.Path) {
+				itemKeys[item.Key] = true
+			}
+		}
+	}
+	for _, v := range t.Spec.Volumes {
+		if !mounted[v.Name] {
+			continue
+		}
+		if v.ConfigMap != nil {
+			addItems(v.ConfigMap.Name, v.ConfigMap.Items)
+		}
+		if v.Projected != nil {
+			for _, src := range v.Projected.Sources {
+				if src.ConfigMap != nil {
+					addItems(src.ConfigMap.Name, src.ConfigMap.Items)
+				}
+			}
+		}
+	}
+	if len(itemKeys) == 1 {
+		for k := range itemKeys {
+			return k, nil
+		}
+	}
+	if len(itemKeys) > 1 {
+		return "", ambiguous(len(itemKeys))
+	}
+	if len(cm.Data) == 1 {
+		for k := range cm.Data {
+			return k, nil
+		}
+	}
+	return "", ambiguous(len(cm.Data))
 }

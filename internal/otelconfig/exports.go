@@ -26,7 +26,7 @@ func (a *Analysis) ExportEndpoints() []Endpoint {
 	for _, id := range a.Exporters {
 		cfg := asMap(a.exporterCfg[id])
 		var raws []string
-		switch ComponentType(id) {
+		switch normalType(ComponentType(id)) {
 		case "loadbalancing":
 			resolver := asMap(cfg["resolver"])
 			raws = append(raws, asStrings(asMap(resolver["static"])["hostnames"])...)
@@ -37,14 +37,28 @@ func (a *Analysis) ExportEndpoints() []Endpoint {
 				raws = append(raws, svc)
 			}
 		default:
-			if e := asString(cfg["endpoint"]); e != "" {
-				raws = append(raws, e)
-			} else if d := asString(cfg["domain"]); d != "" {
-				raws = append(raws, d)
+			// endpoint, per-signal endpoints (otlphttp), ingest_url (signalfx),
+			// then a vendor domain. Duplicate hosts are collapsed below.
+			for _, k := range []string{"endpoint", "traces_endpoint", "metrics_endpoint", "logs_endpoint", "ingest_url"} {
+				if e := asString(cfg[k]); e != "" {
+					raws = append(raws, e)
+				}
+			}
+			if len(raws) == 0 {
+				if d := asString(cfg["domain"]); d != "" {
+					raws = append(raws, d)
+				}
 			}
 		}
+		seen := map[string]bool{}
 		for _, raw := range raws {
-			out = append(out, parseEndpoint(id, raw))
+			e := parseEndpoint(id, raw)
+			if k := e.Host + ":" + e.Port; !e.Unresolved && seen[k] {
+				continue
+			} else {
+				seen[k] = true
+			}
+			out = append(out, e)
 		}
 	}
 	return out
