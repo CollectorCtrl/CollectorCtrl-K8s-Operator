@@ -53,6 +53,14 @@ rbac:
 # Required when rbac.clusterScoped=false.
 clusterID: ""
 
+# Human-readable cluster name shown in CollectorCtrl (defaults to clusterID).
+clusterName: ""
+
+# One extra connection per cluster that lists collector-like workloads (by
+# image name only, no configuration) so the UI can suggest which to opt in.
+clusterObserver:
+  enabled: true
+
 # Optional trusted CA bundle supplied as an existing ConfigMap (key ca.crt).
 opampCAConfigMap: ""
 

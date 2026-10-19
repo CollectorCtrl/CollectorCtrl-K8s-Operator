@@ -59,6 +59,10 @@ spec:
               value: /var/lib/collectorctrl/credentials
             - name: CLUSTER_ID
               value: {{ .Values.clusterID | quote }}
+            - name: CLUSTER_NAME
+              value: {{ .Values.clusterName | quote }}
+            - name: CLUSTER_OBSERVER
+              value: {{ ternary "true" "false" .Values.clusterObserver.enabled | quote }}
             {{- if not .Values.rbac.clusterScoped }}
             - name: WATCH_NAMESPACE
               value: {{ .Release.Namespace | quote }}
