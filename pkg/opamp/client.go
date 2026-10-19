@@ -283,6 +283,7 @@ func (c *Client) Report(o Observation) error {
 	}
 	return err
 }
+
 // ClusterInventory is the cluster-scoped snapshot sent on the operator's
 // cluster connection (collectorctrl/k8s_cluster_inventory_v1). It lists
 // workloads that look like collectors from metadata only (image names); no
