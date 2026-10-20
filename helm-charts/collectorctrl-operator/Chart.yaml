@@ -1,9 +1,9 @@
 apiVersion: v2
 name: collectorctrl-operator
-description: CollectorCtrl Kubernetes Operator for unified fleet management of OpenTelemetry Collectors
+description: Observes OpenTelemetry Collector workloads (any vendor chart) and reports health, role and topology to CollectorCtrl over OpAMP
 type: application
-version: 0.2.0
-appVersion: "0.6.0-beta"
+version: 0.3.0
+appVersion: "0.7.0"
 home: https://collectorctrl.com
 sources:
   - https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator
@@ -19,3 +19,10 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/prerelease: "true"
+  artifacthub.io/changes: |
+    - kind: added
+      description: Label opt-in discovery (collectorctrl.io/observe), role, stack and topology inference
+    - kind: added
+      description: Cluster connection listing collector workloads not yet opted in
+    - kind: changed
+      description: Default namespace collectorctrl-operator; RBAC adds read access to Services

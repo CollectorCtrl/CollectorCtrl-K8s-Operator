@@ -1,0 +1,33 @@
+name: Bug report
+description: Something the operator does wrong or not at all
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Operator version
+      description: Image tag, or the `version` field in the operator's "starting manager" log line
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Kubernetes platform and version
+      placeholder: e.g. EKS 1.30, AKS 1.29, kind 0.24
+  - type: textarea
+    id: collector
+    attributes:
+      label: Collector setup
+      description: Chart and version (e.g. splunk-otel-collector 0.162.1), workload kind, how it was opted in (label or CollectorMonitor)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Operator logs
+      description: "`kubectl -n collectorctrl-operator logs deploy/<release>-collectorctrl-operator`. Remove tokens and hostnames you cannot share."
+      render: text

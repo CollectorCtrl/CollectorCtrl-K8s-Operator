@@ -12,9 +12,9 @@ import (
 type AgentType string
 
 const (
-	AgentTypeVM       AgentType = "vm"
-	AgentTypeWindows  AgentType = "windows"
-	AgentTypeLinux    AgentType = "linux"
+	AgentTypeVM         AgentType = "vm"
+	AgentTypeWindows    AgentType = "windows"
+	AgentTypeLinux      AgentType = "linux"
 	AgentTypeKubernetes AgentType = "kubernetes"
 )
 
@@ -166,12 +166,12 @@ type ConfigChangeRequest struct {
 
 // ConfigChangeResult reports the outcome of a config change attempt.
 type ConfigChangeResult struct {
-	ChangeID    string    `json:"changeID"`
-	Status      string    `json:"status"`      // pending, applied, failed, rolled_back
-	GitCommit   string    `json:"gitCommit"`   // empty for emergency
-	GitPRURL    string    `json:"gitPRURL"`    // empty for emergency
-	AffectedAgents []string `json:"affectedAgents"`
-	Error       string    `json:"error,omitempty"`
-	StartedAt   time.Time `json:"startedAt"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	ChangeID       string     `json:"changeID"`
+	Status         string     `json:"status"`    // pending, applied, failed, rolled_back
+	GitCommit      string     `json:"gitCommit"` // empty for emergency
+	GitPRURL       string     `json:"gitPRURL"`  // empty for emergency
+	AffectedAgents []string   `json:"affectedAgents"`
+	Error          string     `json:"error,omitempty"`
+	StartedAt      time.Time  `json:"startedAt"`
+	CompletedAt    *time.Time `json:"completedAt,omitempty"`
 }

@@ -3,11 +3,11 @@ replicaCount: 1
 image:
   # Published by .github/workflows/build-operator.yml as ghcr.io/<owner>/<repo>/operator.
   repository: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator
-  # The workflow currently publishes only the mutable "latest" and "main" tags, so
-  # pull on every start. Pin an immutable version tag or digest once versioned
-  # images are published, and set pullPolicy back to IfNotPresent.
-  pullPolicy: Always
-  tag: "latest"
+  # Empty uses the chart's appVersion (an immutable release tag such as 0.7.0).
+  # "main"/"latest" track the main branch; use them only for testing, with
+  # pullPolicy: Always.
+  tag: ""
+  pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 nameOverride: ""

@@ -1,33 +1,31 @@
-# Build stage
-FROM golang:1.24-alpine AS builder
+# syntax=docker/dockerfile:1
+# Build stage: reproducible build from go.mod/go.sum (no network tidy).
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 WORKDIR /workspace
 
-# Cache dependencies
-COPY go.mod ./
-RUN go mod tidy
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source
-COPY . .
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY operator/ operator/
+COPY pkg/ pkg/
 
-# Build the operator binary
-# CGO_ENABLED=0 for static binary, -a for rebuild all packages
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -ldflags '-s -w' -o manager ./cmd/operator
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o manager ./cmd/operator
 
-# Final stage: minimal distroless image
+# Runtime: distroless, non-root, no shell.
 FROM gcr.io/distroless/static:nonroot
+LABEL org.opencontainers.image.title="CollectorCtrl Kubernetes Operator" \
+      org.opencontainers.image.description="Observes OpenTelemetry Collector workloads in Kubernetes and reports them to CollectorCtrl over OpAMP" \
+      org.opencontainers.image.source="https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator" \
+      org.opencontainers.image.licenses="Apache-2.0"
 WORKDIR /
-
-# Copy the binary
-COPY --from=builder /workspace/manager .
-
-# Run as non-root (uid 65532 is the distroless nonroot user)
+COPY --from=builder /workspace/manager /manager
 USER 65532:65532
-
-# Expose metrics port
-EXPOSE 8080
-EXPOSE 8081
-
+# 8080: Prometheus metrics, 8081: health probes
+EXPOSE 8080 8081
 ENTRYPOINT ["/manager"]

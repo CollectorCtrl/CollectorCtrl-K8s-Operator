@@ -14,16 +14,16 @@ What gets installed in the `collectorctrl-operator` namespace:
 | `credentials-pvc.yaml` | Retained 128Mi claim for per-workload credentials |
 | `deployment.yaml` | One observer replica, `Recreate` strategy, enrollment auth |
 
-Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest`
+Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.7.0` (set in `deployment.yaml`).
 
 ## Prerequisites
 
 - Kubernetes 1.25+ and `kubectl` access with permission to create CRDs and cluster RBAC.
-- A CollectorCtrl server **v0.6.0-beta or later**, reachable from the cluster over
+- A CollectorCtrl server with Kubernetes role/topology support (server `main` from 2026-10-19 or later), reachable from the cluster over
   `wss://` (port 4320) with a certificate the observer trusts. Certificate
   verification cannot be turned off; supply your CA if it is private.
-- An **Agent Enrollment** token (`cce_…`) from **Settings → API Tokens → Agent Enrollment**. Each
-  monitored workload/container uses one enrollment.
+- An **Agent Enrollment** token (`cce_…`) from **Settings → API Tokens → Agent Enrollment**. The cluster
+  connection uses one enrollment, and each observed collector workload uses one more.
 - A storage class that can provision the credential claim.
 
 ## Install with the script
@@ -56,20 +56,27 @@ kubectl apply -f deploy/deployment.yaml
 For a private CA, create `kubectl create configmap collectorctrl-opamp-ca -n collectorctrl-operator --from-file=ca.crt=./ca.pem`
 and uncomment the `OPAMP_CA_FILE` lines in `deployment.yaml`.
 
-## Monitor a collector
+## Observe a collector
 
-Edit `example-collectormonitor.yaml` (or `coralogix-collectormonitor.yaml`) so the
-selector matches **exactly one** workload, set `collectorContainer` for
-multi-container pods, and set `opampServer` to the same endpoint as the observer.
-Then:
+Add the opt-in label to the collector workload, normally through its Helm values, and deploy as usual:
+
+```yaml
+labels:
+  collectorctrl.io/observe: "true"
+```
+
+Collectors that have not opted in are listed in CollectorCtrl under **Fleet → Kubernetes** as
+"Likely collectors not yet opted in". See [docs/configuration.md](../docs/configuration.md) for the optional
+annotations.
+
+A `CollectorMonitor` resource is the alternative when you cannot change the workload's labels. Edit
+`example-collectormonitor.yaml` (or `coralogix-collectormonitor.yaml`) so the selector matches **exactly one**
+workload and `opampServer` equals the observer's endpoint, then:
 
 ```bash
 kubectl apply -f deploy/example-collectormonitor.yaml
 kubectl get collectormonitors -A
-kubectl describe collectormonitor splunk-otel-collector -n observability
 ```
-
-The workload appears in CollectorCtrl under **Fleet → Kubernetes workloads**.
 
 ## Upgrading from the shared-secret prototype
 
@@ -91,12 +98,14 @@ New installs should use enrollment directly.
 
 | Symptom | Check |
 |---------|-------|
-| Pod `CreateContainerConfigError` | Secret `collectorctrl-auth` with key `enrollment-token` exists in `collectorctrl` |
+| Pod `CreateContainerConfigError` | Secret `collectorctrl-auth` with key `enrollment-token` exists in `collectorctrl-operator` |
 | Pod `Pending` | The credential claim is bound (`kubectl get pvc -n collectorctrl-operator`) |
 | TLS or `x509` errors in logs | Endpoint hostname matches the certificate; supply the CA |
 | Monitor error "opampServer must match" | `spec.opampServer` equals the observer's `OPAMP_SERVER` exactly |
 | Monitor reports ambiguous workload or ConfigMap | Narrow `matchLabels`, or set `configMapSelector.name`/`key` |
-| Workload re-enrolment fails after revoke | Reset the identity under Agent Enrollment; see the main README |
+| Workload re-enrolment fails after revoke | Reset the identity under Agent Enrollment; see [docs/installation.md](../docs/installation.md#credentials-and-recovery) |
+
+More in [docs/troubleshooting.md](../docs/troubleshooting.md).
 
 ```bash
 kubectl logs -n collectorctrl-operator -l app.kubernetes.io/name=collectorctrl-operator

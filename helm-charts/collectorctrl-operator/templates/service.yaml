@@ -1,0 +1,19 @@
+{{- if .Values.serviceMonitor.enabled }}
+# Metrics endpoint for the ServiceMonitor (which selects Services, not pods).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "collectorctrl-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+      protocol: TCP
+{{- end }}
