@@ -1,0 +1,17 @@
+# Build output
+/bin/
+/dist/
+/manager
+cover.out
+*.test
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local environment
+.env
+*.local.yaml

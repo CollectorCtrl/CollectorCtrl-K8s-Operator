@@ -43,8 +43,8 @@ spec:
             readOnlyRootFilesystem: true
             runAsUser: 65532
             runAsGroup: 65532
-          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest"
-          imagePullPolicy: Always
+          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.7.0"
+          imagePullPolicy: IfNotPresent
           args:
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081

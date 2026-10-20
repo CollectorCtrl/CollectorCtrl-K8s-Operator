@@ -10,7 +10,7 @@
 #   OPAMP_SERVER      required  wss:// OpAMP endpoint of your CollectorCtrl server
 #   OPAMP_CA_FILE     optional  CA bundle (PEM) if the server uses a private CA
 #   ENROLL_TOKEN      optional  cce_... token; prompted for if not set
-# Image: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:latest
+# Image: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.7.0 (edit deploy/deployment.yaml to change)
 
 set -euo pipefail
 
