@@ -59,7 +59,7 @@ jobs:
 
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # main -> :main and :latest; v0.7.0 -> :0.7.0 and :0.7 (immutable releases).
