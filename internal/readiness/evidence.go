@@ -326,21 +326,44 @@ func splitAgentFlag(tok string) (string, string) {
 
 // nodeModules lists modules loaded with --require/-r/--import/--loader.
 func nodeModules(text string) []string {
+	mods, _ := nodeModulesConsumed(text)
+	return mods
+}
+
+// nodeModulesConsumed also reports how many fields the module flags used, so
+// the remaining flags can be counted without being copied. A value that looks
+// like another option (starts with "-") is never taken as a module: with a
+// trailing "--require", the next option may carry a credential.
+func nodeModulesConsumed(text string) ([]string, int) {
 	var out []string
+	consumed := 0
+	module := func(v string) (string, bool) {
+		v = strings.Trim(v, `"'`)
+		if v == "" || strings.HasPrefix(v, "-") || len(v) > 256 {
+			return "", false
+		}
+		return v, true
+	}
 	fields := strings.Fields(text)
 	for i := 0; i < len(fields); i++ {
 		f := strings.Trim(fields[i], `"'`)
 		for _, flag := range []string{"--require", "-r", "--import", "--loader", "--experimental-loader"} {
 			switch {
 			case f == flag && i+1 < len(fields):
-				out = append(out, strings.Trim(fields[i+1], `"'`))
-				i++
+				if m, ok := module(fields[i+1]); ok {
+					out = append(out, m)
+					consumed += 2
+					i++
+				}
 			case strings.HasPrefix(f, flag+"="):
-				out = append(out, strings.TrimPrefix(f, flag+"="))
+				if m, ok := module(strings.TrimPrefix(f, flag+"=")); ok {
+					out = append(out, m)
+					consumed++
+				}
 			}
 		}
 	}
-	return out
+	return out, consumed
 }
 
 func splitList(v string) []string {
@@ -479,11 +502,11 @@ func launcherEntries(name, value string) ([]string, int) {
 			}
 		}
 	case "NODE_OPTIONS":
-		mods := nodeModules(value)
+		mods, consumed := nodeModulesConsumed(value)
 		for _, m := range mods {
 			entries = append(entries, "--require "+m)
 		}
-		other = len(strings.Fields(value)) - countRequireFields(value)
+		other = len(strings.Fields(value)) - consumed
 	case "CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER":
 		v := strings.TrimSpace(value)
 		if guidOrFlag.MatchString(v) {
@@ -501,26 +524,6 @@ func launcherEntries(name, value string) ([]string, int) {
 }
 
 var guidOrFlag = regexp.MustCompile(`^(\{?[0-9A-Fa-f-]{36}\}?|[01])$`)
-
-func countRequireFields(text string) int {
-	n := 0
-	fields := strings.Fields(text)
-	for i := 0; i < len(fields); i++ {
-		f := strings.Trim(fields[i], `"'`)
-		switch f {
-		case "--require", "-r", "--import", "--loader", "--experimental-loader":
-			n += 2
-			i++
-			continue
-		}
-		for _, flag := range []string{"--require=", "--import=", "--loader=", "--experimental-loader="} {
-			if strings.HasPrefix(f, flag) {
-				n++
-			}
-		}
-	}
-	return n
-}
 
 var vendorEnvPrefixes = []struct{ prefix, vendor string }{
 	{"OTEL_", "opentelemetry"}, {"SPLUNK_", "splunk"}, {"DD_", "datadog"}, {"NEW_RELIC_", "newrelic"},

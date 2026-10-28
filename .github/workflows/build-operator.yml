@@ -51,6 +51,9 @@ jobs:
       - name: Known vulnerabilities (govulncheck)
         run: make vuln
 
+      - name: Fuzz parsers (30 s each)
+        run: make fuzz FUZZTIME=30s
+
   e2e:
     name: End-to-end on kind (Kubernetes ${{ matrix.k8s }})
     needs: verify
