@@ -63,6 +63,12 @@ spec:
               value: {{ .Values.clusterName | quote }}
             - name: CLUSTER_OBSERVER
               value: {{ ternary "true" "false" .Values.clusterObserver.enabled | quote }}
+            - name: READINESS
+              value: {{ ternary "true" "false" .Values.readiness.enabled | quote }}
+            - name: READINESS_INTERVAL
+              value: {{ .Values.readiness.interval | quote }}
+            - name: READINESS_EXCLUDE_NAMESPACES
+              value: {{ join "," .Values.readiness.excludeNamespaces | quote }}
             {{- if not .Values.rbac.clusterScoped }}
             - name: WATCH_NAMESPACE
               value: {{ .Release.Namespace | quote }}

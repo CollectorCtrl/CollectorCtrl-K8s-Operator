@@ -26,7 +26,7 @@ flowchart TB
         crc["CollectorMonitor reconciler<br/><i>explicit monitors</i>"]
         lrc["Label reconcilers ×3<br/><i>DaemonSet · Deployment · StatefulSet<br/>with collectorctrl.io/observe</i>"]
         obs["observe()<br/>workload → container → ConfigMap/key<br/>→ pods → analyse → report"]
-        cobs["Cluster observer<br/><i>leader-only, every 60 s</i>"]
+        cobs["Cluster observer<br/><i>leader-only: inventory every 60 s,<br/>readiness every 5 min</i>"]
         pool["Connection pool<br/>one OpAMP client per identity"]
         cc["Cluster OpAMP client"]
         crc --> obs
@@ -38,7 +38,8 @@ flowchart TB
     api["Kubernetes API"] -- "list/watch" --> cache
     crc -- "status update" --> api
     pool == "k8s_observation_v1" ==> srv["CollectorCtrl server"]
-    cc == "k8s_cluster_inventory_v1" ==> srv
+    cc == "k8s_cluster_inventory_v1<br/>k8s_instrumentation_readiness_v1" ==> srv
+    api -- "namespaces, webhooks<br/>(uncached list)" --> cobs
     pool --- vol[("Credential volume<br/>OPAMP_CREDENTIAL_DIRECTORY")]
     cc --- vol
 ```
@@ -49,6 +50,7 @@ flowchart TB
 | Label reconcilers | `operator/controllers/label_controller.go` | Labelled workload created, updated or deleted; label added or removed; Pod, ConfigMap or monitor changes in the namespace; report interval | Nothing (errors go to the log) |
 | Analysis | `operator/controllers/insight.go`, `internal/otelconfig` | Every observation | Nothing |
 | Cluster observer | `operator/controllers/cluster_observer.go` | Timer (60 s), leader only | Nothing |
+| Readiness scan | `operator/controllers/readiness.go`, `internal/readiness` | Cluster observer, every `readiness.interval` (5 min) | Nothing |
 | OpAMP client | `pkg/opamp` | Reconcilers | Credentials on the credential volume |
 
 ## The observation pipeline
@@ -96,7 +98,7 @@ A workload can be selected by both the label and a `CollectorMonitor`. The monit
 | Connection | OpAMP identity (`service.instance.id`) | Count | Carries |
 | --- | --- | --- | --- |
 | Observed collector | `k8s://<cluster-id>/<workload-uid>/<container>` | One per collector workload | `k8s_observation_v1` and readiness health |
-| Cluster observer | `k8s://<cluster-id>/cluster-observer` | One per cluster | `k8s_cluster_inventory_v1` |
+| Cluster observer | `k8s://<cluster-id>/cluster-observer` | One per cluster | `k8s_cluster_inventory_v1`, `k8s_instrumentation_readiness_v1` |
 
 - **Cluster ID** is `CLUSTER_ID`, or the UID of the `kube-system` namespace (stable for the life of the cluster).
   Namespace-scoped installs must set it.
@@ -151,6 +153,21 @@ ones, even across reconnects.
 A workload is listed when a container image's **repository path** (never its tag) contains
 `opentelemetry-collector`, `otelcol`, `otel-collector`, `aws-otel-collector`, `elastic-otel-collector`,
 `dynatrace-otel-collector`, `nrdot-collector` or `grafana/alloy`.
+
+### `k8s_instrumentation_readiness_v1` (per cluster, every 5 minutes)
+
+| Field | Meaning |
+| --- | --- |
+| `source`, `observed_at`, `report_interval_seconds`, `cluster_id`, `cluster_name` | As above |
+| `registry_checked` | Always `false` in 0.8: image config (Dockerfile `ENV`) was not read |
+| `injectors_checked` | `false` when namespaces or webhooks could not be listed (namespace-scoped install, RBAC) |
+| `injectors[]` | APM injector webhooks: `name` (MutatingWebhookConfiguration), `vendor`, `mode` (`request` or `selector`), `webhooks[]`, `failure_policy` |
+| `workloads[]` | `namespace`, `kind`, `name`, `uid`, `stack`, `stack_source`, `pod` (running pod inspected, if any), `verdict`, `containers[]` |
+| `containers[]` | `name`, `image`, `language`, `language_source`, `agents[]`, `requests[]`, `selected_by[]`, `launcher[]`, `vendor_env[]`, `verdict`, `reasons[]` |
+| `agents[]` | `vendor`, `language`, `mechanism`, `evidence`, `injected` (only in the running pod) |
+| `launcher[]` | `name`, `source` (`literal`, `configmap`, `secret`, `field`, `resource`, `envfrom-configmap`, `envfrom-secret`), `resolved`, `entries[]` (agent-loading parts only), `other_flags` (count), `in_pod` |
+| `summary` | Workloads per verdict, counted before truncation |
+| `truncated` | `true` if more than 2,000 workloads |
 
 ## Inference rules
 
@@ -215,6 +232,66 @@ Endpoints are read from `endpoint`, `traces_endpoint`, `metrics_endpoint`, `logs
 vendor `domain`. For the `loadbalancing` exporter they come from its static, DNS and Kubernetes resolvers. Repeated
 hosts from one exporter are collapsed.
 
+### Instrumentation readiness
+
+All rules live in `internal/readiness` and are pure functions over pod specs, tested in `readiness_test.go`.
+
+**Scope.** Every Deployment, StatefulSet and DaemonSet outside `readiness.excludeNamespaces` and the operator's own
+namespace. Containers whose image is a collector, service-mesh proxy, log shipper or similar infrastructure are
+skipped; a workload with no application container is left out.
+
+**Evidence.** For each application container: command and args, `env` (literal values and ConfigMap keys),
+`envFrom` ConfigMaps, init containers, volumes, pod labels and annotations. The same is read from the newest
+running pod of the workload, so agents added by admission webhooks are found and marked `injected`. Secret
+references are recorded as unresolved, never read.
+
+**Agents.** Loaders first, then injector traces for vendors not already found:
+
+| Mechanism | Read from | Examples |
+| --- | --- | --- |
+| `javaagent` | `-javaagent:` / `-agentpath:` in `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`, `JAVA_OPTS`, command line | `opentelemetry-javaagent`, `dd-java-agent`, `newrelic.jar`, AppDynamics `javaagent.jar` |
+| `node-require` | `--require` / `--import` in `NODE_OPTIONS` or the command | `@opentelemetry/auto-instrumentations-node`, `dd-trace`, `newrelic`, `@splunk/otel` |
+| `python-wrapper`, `python-path` | Wrapper command; `PYTHONPATH` entries | `opentelemetry-instrument`, `ddtrace-run`, `newrelic-admin` |
+| `dotnet-profiler`, `dotnet-startup-hook` | `CORECLR_ENABLE_PROFILING=1` with the profiler GUID or path; `DOTNET_STARTUP_HOOKS` | OpenTelemetry, Datadog and New Relic profiler GUIDs |
+| `ld-preload` | `LD_PRELOAD` | Dynatrace `liboneagentproc.so`, Datadog injector |
+| `init-container`, `injected-annotation` | Injector init containers and markers | `opentelemetry-auto-instrumentation-java`, `datadog-lib-java-init`, `oneagent.dynatrace.com/injected` |
+
+**Requests** are intent, not agents: `instrumentation.opentelemetry.io/inject-*` on the pod template or namespace,
+New Relic's `instrumentation.newrelic.com/inject-*`, Datadog's `admission.datadoghq.com/enabled` and `*-lib.version`,
+Elastic's `co.elastic.apm/attach`.
+
+**Injectors.** Mutating webhooks that act on pod `CREATE` and belong to an APM vendor (by configuration, webhook
+or service name). Hooks that only add metadata or settings (New Relic metadata injection; Datadog's agent config,
+tags and CWS hooks) are ignored. `request` injectors (OTel Operator, New Relic, Elastic) select a pod only when it
+carries their request; `selector` injectors (Dynatrace, Datadog library injection, Instana) select every pod their
+namespace and object selectors match. Splunk installs the upstream OTel Operator, so Splunk and OpenTelemetry count
+as one family.
+
+**Language**: from a language-specific agent, else the command (`java`, `node`, `gunicorn`, `dotnet`, ...), else a
+majority of well-known variable names (`JAVA_HOME`, `NODE_ENV`, `PYTHONUNBUFFERED`, `ASPNETCORE_URLS`,
+`GOMAXPROCS`, ...), else an exact base-image name (`eclipse-temurin`, `node:20-alpine`, `python:3.12-slim`,
+`mcr.microsoft.com/dotnet/aspnet`). Application images rarely reveal more, so many containers stay `unknown`.
+
+```mermaid
+flowchart TD
+    s(["Application container"]) --> n{"APM vendors<br/>loaded?"}
+    n -- "two or more" --> conflict["conflict"]
+    n -- "one" --> other{"Another vendor's<br/>injector selects it?"}
+    other -- yes --> conflict
+    other -- no --> unk{"Vendor<br/>recognised?"}
+    unk -- yes --> instr["instrumented"]
+    unk -- no --> review1["review"]
+    n -- none --> lang{"Language"}
+    lang -- "unknown" --> u["unknown<br/><i>or review, if something<br/>is in the way</i>"]
+    lang -- "go / other" --> uns["unsupported"]
+    lang -- "Java, Node.js,<br/>Python, .NET" --> chk{"Injector selects it, request pending,<br/>vendor variables without agent,<br/>launcher variable set or unreadable?"}
+    chk -- yes --> review2["review"]
+    chk -- no --> ready["ready"]
+```
+
+Every verdict except *instrumented*, *conflict* and *unsupported* carries the caveat that image `ENV` was not
+checked. *Unknown* containers still get merge warnings for any launcher variable, so nothing is hidden.
+
 ## Failure behaviour
 
 | Situation | Result |
@@ -225,3 +302,4 @@ hosts from one exporter are collapsed.
 | Credential volume lost | Affected identities must be reset in CollectorCtrl before they can enroll again (see [installation.md](installation.md#credentials-and-recovery)) |
 | Workload deleted | Connection closed; the entry stays offline in CollectorCtrl until removed |
 | Operator restart | Identities and credentials reused; observation resumes within one interval |
+| Namespaces or webhooks not listable | Readiness still sent with `injectors_checked: false`; every container says injectors were not checked |

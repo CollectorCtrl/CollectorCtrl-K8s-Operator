@@ -43,7 +43,7 @@ spec:
             readOnlyRootFilesystem: true
             runAsUser: 65532
             runAsGroup: 65532
-          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.7.0"
+          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0"
           imagePullPolicy: IfNotPresent
           args:
             - --metrics-bind-address=:8080
@@ -75,6 +75,13 @@ spec:
             - name: CLUSTER_OBSERVER
               # "false" disables the cluster connection and candidate list.
               value: "true"
+            - name: READINESS
+              # "false" disables the instrumentation readiness report.
+              value: "true"
+            - name: READINESS_INTERVAL
+              value: "5m"
+            - name: READINESS_EXCLUDE_NAMESPACES
+              value: "kube-system,kube-public,kube-node-lease"
             # Private CA: create ConfigMap collectorctrl-opamp-ca (key ca.crt),
             # then uncomment this env var and the opamp-ca mount and volume.
             # - name: OPAMP_CA_FILE

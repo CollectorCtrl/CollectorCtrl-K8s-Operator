@@ -67,11 +67,11 @@ them to `pkg/api` and the server's validation in the same change, and document t
 4. Merge to `main`, then tag the merge commit:
 
    ```bash
-   git tag -a v0.7.0 -m "v0.7.0"
-   git push origin v0.7.0
+   git tag -a v0.8.0 -m "v0.8.0"
+   git push origin v0.8.0
    ```
 
-   CI publishes `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.7.0` and `:0.7` for linux/amd64 and
+   CI publishes `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0` and `:0.8` for linux/amd64 and
    linux/arm64, with the version embedded in the binary.
 5. Create a GitHub release from the tag, with the changelog section as notes.
 

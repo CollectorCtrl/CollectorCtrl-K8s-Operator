@@ -47,7 +47,7 @@ it.
 
 ### Image tags
 
-The chart uses the image tag that matches its `appVersion` (for example `0.7.0`). Release tags are immutable.
+The chart uses the image tag that matches its `appVersion` (for example `0.8.0`). Release tags are immutable.
 `main` and `latest` follow the main branch and are for testing only:
 
 ```bash

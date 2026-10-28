@@ -19,6 +19,9 @@ There are three ways to configure the operator:
 | `clusterID` | `""` | Stable cluster identity. Empty uses the `kube-system` namespace UID. Required when `rbac.clusterScoped=false`. Never change it after install |
 | `clusterName` | `""` | Display name in CollectorCtrl (defaults to the cluster ID) |
 | `clusterObserver.enabled` | `true` | One extra connection that lists collector-like workloads by image name, so the UI can suggest what to opt in |
+| `readiness.enabled` | `true` | Instrumentation readiness report on the cluster connection (needs `clusterObserver.enabled`). Adds `list` on namespaces and mutatingwebhookconfigurations to the ClusterRole |
+| `readiness.interval` | `5m` | How often the report is sent (1 min to 1 h) |
+| `readiness.excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease` | Namespaces never scanned. The operator's own namespace is always skipped |
 | `rbac.clusterScoped` | `true` | `true` watches all namespaces; `false` watches only the release namespace |
 | `rbac.authSecretNames` | `[]` | Secret names the operator may `get`, for monitors that use `auth.secretRef`. Empty grants no Secret access |
 | `credentialStorage.existingClaim` | `""` | Reuse an existing PVC for credentials |
@@ -52,6 +55,9 @@ The chart sets these values. You only need them when you run the binary yourself
 | `CLUSTER_ID` | Cluster identity. Empty reads the `kube-system` UID |
 | `CLUSTER_NAME` | Display name |
 | `CLUSTER_OBSERVER` | `false` disables the cluster connection |
+| `READINESS` | `false` disables the readiness report |
+| `READINESS_INTERVAL` | Go duration, default `5m` (1 min to 1 h) |
+| `READINESS_EXCLUDE_NAMESPACES` | Comma-separated; empty means the Kubernetes system namespaces |
 | `WATCH_NAMESPACE` | Restrict watches to one namespace |
 | `POD_NAMESPACE` | The operator's own namespace (set from the downward API) |
 

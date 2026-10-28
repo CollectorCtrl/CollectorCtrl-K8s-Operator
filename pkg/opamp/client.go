@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/collectorctrl/collectorctrl/internal/readiness"
 	"github.com/collectorctrl/collectorctrl/pkg/api"
 	opampclient "github.com/open-telemetry/opamp-go/client"
 	opampcltypes "github.com/open-telemetry/opamp-go/client/types"
@@ -314,8 +315,19 @@ type CollectorCandidate struct {
 }
 
 // ReportInventory sends a cluster inventory snapshot. It is a no-op while the
-// transport is disconnected; the next interval sends a fresh snapshot.
+// transport is disconnected.
 func (c *Client) ReportInventory(inv ClusterInventory) error {
+	return c.sendClusterMessage("k8s_cluster_inventory_v1", inv,
+		fmt.Sprintf("Cluster inventory: %d collector-like workloads", len(inv.Collectors)))
+}
+
+// ReportReadiness sends an instrumentation readiness report. Health is left
+// to the inventory, which reports every minute.
+func (c *Client) ReportReadiness(rep InstrumentationReadiness) error {
+	return c.sendClusterMessage("k8s_instrumentation_readiness_v1", rep, "")
+}
+
+func (c *Client) sendClusterMessage(msgType string, body any, health string) error {
 	if c.client == nil {
 		return fmt.Errorf("client not started")
 	}
@@ -331,21 +343,54 @@ func (c *Client) ReportInventory(inv ClusterInventory) error {
 		}
 		return err
 	}
-	if err := c.client.SetHealth(&protobufs.ComponentHealth{Healthy: true, Status: fmt.Sprintf("Cluster inventory: %d collector-like workloads", len(inv.Collectors))}); err != nil {
-		return err
+	if health != "" {
+		if err := c.client.SetHealth(&protobufs.ComponentHealth{Healthy: true, Status: health}); err != nil {
+			return err
+		}
 	}
 	if !c.Connected() {
 		return nil
 	}
-	payload, err := json.Marshal(inv)
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	_, err = c.client.SendCustomMessage(&protobufs.CustomMessage{Capability: "collectorctrl", Type: "k8s_cluster_inventory_v1", Data: payload})
+	_, err = c.client.SendCustomMessage(&protobufs.CustomMessage{Capability: "collectorctrl", Type: msgType, Data: payload})
 	if errors.Is(err, opampcltypes.ErrCustomMessagePending) {
 		return nil
 	}
 	return err
+}
+
+// InstrumentationReadiness is the cluster-scoped readiness report
+// (collectorctrl/k8s_instrumentation_readiness_v1). It is derived from
+// Kubernetes objects only: RegistryChecked is always false, so variables baked
+// into images are unknown, and values from Secrets are never read.
+type InstrumentationReadiness struct {
+	Source                string               `json:"source"` // always "kubernetes-api"
+	ObservedAt            time.Time            `json:"observed_at"`
+	ReportIntervalSeconds int64                `json:"report_interval_seconds"`
+	ClusterID             string               `json:"cluster_id"`
+	ClusterName           string               `json:"cluster_name,omitempty"`
+	RegistryChecked       bool                 `json:"registry_checked"`
+	InjectorsChecked      bool                 `json:"injectors_checked"`
+	Injectors             []readiness.Injector `json:"injectors"`
+	Workloads             []ReadinessWorkload  `json:"workloads"`
+	Summary               map[string]int       `json:"summary"` // workloads per verdict, before truncation
+	Truncated             bool                 `json:"truncated,omitempty"`
+}
+
+// ReadinessWorkload is one application workload and its containers.
+type ReadinessWorkload struct {
+	Namespace   string                `json:"namespace"`
+	Kind        string                `json:"kind"`
+	Name        string                `json:"name"`
+	UID         string                `json:"uid"`
+	Stack       string                `json:"stack,omitempty"`
+	StackSource string                `json:"stack_source,omitempty"`
+	Pod         string                `json:"pod,omitempty"` // running pod inspected for injected agents
+	Verdict     string                `json:"verdict"`
+	Containers  []readiness.Container `json:"containers"`
 }
 
 func keyVal(k, v string) *protobufs.KeyValue {

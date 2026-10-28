@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - Unreleased
+
+### Added
+- **Instrumentation readiness** (`k8s_instrumentation_readiness_v1`, every 5 minutes on the cluster connection).
+  For every application Deployment, StatefulSet and DaemonSet: inferred language, APM agents of any vendor
+  (OpenTelemetry, Splunk, Datadog, New Relic, AppDynamics, Dynatrace, Elastic, Instana, unrecognised jars and
+  profilers), injection requests, which APM injector webhooks select the pod, launcher variables an injector would
+  have to merge with, and a verdict (`conflict`, `review`, `ready`, `unknown`, `unsupported`, `instrumented`) with
+  reasons. Agents added by admission webhooks are found in the newest running pod and marked as injected.
+- Helm values `readiness.enabled`, `readiness.interval`, `readiness.excludeNamespaces`; environment variables
+  `READINESS`, `READINESS_INTERVAL`, `READINESS_EXCLUDE_NAMESPACES`.
+
+### Changed
+- RBAC adds `list` on namespaces and `admissionregistration.k8s.io/mutatingwebhookconfigurations` while readiness is
+  enabled. Without them (namespace-scoped installs) the report says injectors were not checked.
+
+- The image build follows the Go version in `go.mod` (`GOTOOLCHAIN=auto`), so dependency updates that raise it no
+  longer break the build.
+
+### Security
+- No registry access: variables baked into images are not read, and every verdict says so. Secrets are never read.
+  Launcher values are reduced to agent paths, module names and profiler IDs before they leave the cluster.
+
+### Requires
+- CollectorCtrl server with Kubernetes readiness support (`GET /api/k8s/instrumentation-readiness`). Older servers
+  ignore the new message.
+
 ## [0.7.0] - 2026-10-20
 
 ### Added

@@ -61,6 +61,23 @@ clusterName: ""
 clusterObserver:
   enabled: true
 
+# Instrumentation readiness (needs clusterObserver.enabled). Every application
+# workload gets a verdict: which language it runs, which APM agents (any
+# vendor) are loaded or requested, which injector webhooks select it, and
+# which launcher variables (JAVA_TOOL_OPTIONS, NODE_OPTIONS, ...) an injector
+# would have to merge with. Read-only and metadata-only: launcher values are
+# reduced to agent paths and module names, Secrets are never read and image
+# registries are never contacted (variables baked into images are not seen).
+readiness:
+  enabled: true
+  # How often the report is sent (1m to 1h).
+  interval: 5m
+  # Namespaces never scanned. The operator's own namespace is always skipped.
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+
 # Optional trusted CA bundle supplied as an existing ConfigMap (key ca.crt).
 opampCAConfigMap: ""
 
