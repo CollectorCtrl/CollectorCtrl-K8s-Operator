@@ -54,6 +54,12 @@ lint: ## Run golangci-lint (same version as CI).
 vuln: ## Report known vulnerabilities reachable from the code (govulncheck).
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
+FUZZTIME ?= 30s
+.PHONY: fuzz
+fuzz: ## Fuzz the config and readiness parsers (FUZZTIME=30s each).
+	go test ./internal/otelconfig -run '^$$' -fuzz FuzzAnalyse -fuzztime $(FUZZTIME)
+	go test ./internal/readiness -run '^$$' -fuzz FuzzAnalyseRedacts -fuzztime $(FUZZTIME)
+
 .PHONY: verify
 verify: fmt-check vet license-check test helm-lint ## Everything CI checks before building an image (plus lint and vuln).
 

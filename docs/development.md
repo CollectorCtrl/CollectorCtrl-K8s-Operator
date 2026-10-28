@@ -49,6 +49,10 @@ make run
   manifests rendered from the upstream, Splunk, Coralogix and AWS ADOT charts. To bump a chart version, edit
   `hack/render-vendor-charts.sh`, run `make vendor-fixtures`, and review every changed expectation by hand. A new
   fixture file fails until its expectations are added; the failure prints what was observed.
+- **Fuzz tests** (`make fuzz`, 30 s per target in CI) drive the collector-config analysis and the readiness
+  parser with arbitrary input. They must never panic, and the readiness target asserts that a credential passed in
+  `JAVA_TOOL_OPTIONS` or `NODE_OPTIONS` never reaches the report. Seed inputs run with every `go test`; add any
+  crasher the fuzzer finds as a seed.
 - **End-to-end on kind** (`hack/e2e-kind.sh`, run by CI on two Kubernetes versions). It installs the chart with a
   local image, adds an opted-in collector and two applications, checks that the service account has exactly the
   documented permissions (and no Secret access), that the operator reconciles without RBAC errors or restarts, and
@@ -101,7 +105,7 @@ Tags are never moved or reused. Each push to `main` also publishes `:main` and `
 
 | Workflow | Runs on | Checks |
 | --- | --- | --- |
-| CI | push, pull request, tags | `make verify`, golangci-lint, govulncheck, kind end-to-end tests (two Kubernetes versions), image build; push and sign outside PRs |
+| CI | push, pull request, tags | `make verify`, golangci-lint, govulncheck, fuzzing, kind end-to-end tests (two Kubernetes versions), image build; push and sign outside PRs |
 | CodeQL | push, pull request, weekly | Go security analysis (`security-extended`) |
 | Dependency review | pull request | New dependencies with known vulnerabilities (high and above) or incompatible licences |
 | OpenSSF Scorecard | push to `main`, weekly | Repository security practices; results in code scanning and on the badge |
