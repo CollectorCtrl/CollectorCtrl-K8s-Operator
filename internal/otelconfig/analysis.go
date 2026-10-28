@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 // Package otelconfig derives facts from an OpenTelemetry Collector YAML
 // configuration: which components the pipelines actually use, what role the
 // collector most likely plays, and where its exporters send data.

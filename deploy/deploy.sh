@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 CollectorCtrl
 # CollectorCtrl Kubernetes observer: quick deploy with kubectl (no Helm).
 # The Helm chart (helm-charts/collectorctrl-operator) is the supported install path.
 #

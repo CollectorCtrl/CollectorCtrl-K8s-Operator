@@ -1,9 +1,12 @@
 # CollectorCtrl Kubernetes Operator
 
 [![CI](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/actions/workflows/build-operator.yml/badge.svg)](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/actions/workflows/build-operator.yml)
+[![CodeQL](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/actions/workflows/codeql.yml/badge.svg)](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/badge)](https://scorecard.dev/viewer/?uri=github.com/CollectorCtrl/CollectorCtrl-K8s-Operator)
+[![Release](https://img.shields.io/github/v/release/CollectorCtrl/CollectorCtrl-K8s-Operator?include_prereleases&sort=semver)](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Helm chart](https://img.shields.io/badge/helm%20chart-0.4.0-0f1689)
-![Kubernetes](https://img.shields.io/badge/kubernetes-1.25%2B-326ce5)
+![Kubernetes](https://img.shields.io/badge/tested%20on-kubernetes%201.33%20%7C%201.37-326ce5)
 
 **See every OpenTelemetry Collector in your clusters, whatever vendor chart deployed it, without handing over control.**
 
@@ -207,7 +210,7 @@ other flags are counted, never copied.
 
 ## Quick start
 
-**You need:** Kubernetes 1.25+, Helm 3, a CollectorCtrl server reachable from the cluster over `wss://` with a
+**You need:** Kubernetes 1.30+ (1.33 and 1.37 tested), Helm 3.8+, a CollectorCtrl server reachable from the cluster over `wss://` with a
 certificate the operator trusts, and an **Agent Enrollment** token (`cce_…`) from
 *Settings → API Tokens → Agent Enrollment*.
 
@@ -217,10 +220,9 @@ kubectl create namespace collectorctrl-operator
 kubectl -n collectorctrl-operator create secret generic collectorctrl-auth \
   --from-literal=enrollment-token=cce_YOUR_TOKEN
 
-# 2. Install the operator
-git clone https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator.git && cd CollectorCtrl-K8s-Operator
-helm upgrade --install collectorctrl-operator ./helm-charts/collectorctrl-operator \
-  --namespace collectorctrl-operator \
+# 2. Install the operator (signed OCI chart; see docs/verifying.md)
+helm upgrade --install collectorctrl-operator oci://ghcr.io/collectorctrl/charts/collectorctrl-operator \
+  --version 0.4.0 --namespace collectorctrl-operator \
   --set opamp.server=wss://collectorctrl.example.com:4320/v1/opamp \
   --set opamp.enrollmentSecret=collectorctrl-auth \
   --set clusterName=prod-eu
@@ -233,7 +235,8 @@ Within a minute, CollectorCtrl's Kubernetes inventory lists the cluster's collec
 **"Likely collectors not yet opted in"**. The token needs one enrollment use for the cluster connection plus one per
 collector you opt in.
 
-Private CA, namespace-scoped installs, OpenShift, raw manifests, upgrades and credential recovery are covered in
+To install from a checkout instead, use `./helm-charts/collectorctrl-operator` as the chart. Private CA,
+namespace-scoped installs, OpenShift, raw manifests, upgrades and credential recovery are covered in
 [docs/installation.md](docs/installation.md).
 
 ## Opt in a collector
@@ -293,6 +296,9 @@ has created their workloads.
   pinned by the administrator. Server commands and connection changes are refused.
 - **Per-identity credentials** exchanged from the enrollment token and persisted on a dedicated volume.
 - **Hardened pod.** Distroless, non-root, read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp.
+- **Verifiable supply chain.** Images and the Helm chart are signed with Sigstore cosign, images carry SBOM and SLSA
+  provenance attestations, and base images and CI actions are pinned by digest. Every change runs CodeQL,
+  golangci-lint, govulncheck and end-to-end tests on kind. See [docs/verifying.md](docs/verifying.md).
 
 Read [SECURITY.md](SECURITY.md) for the full model and how to report a vulnerability.
 
@@ -315,8 +321,9 @@ The most used Helm values (full reference in [docs/configuration.md](docs/config
 
 ## Compatibility and limits
 
-- **Platforms.** EKS, AKS, GKE (Standard and Autopilot), OpenShift (with `values-openshift.yaml`) and self-managed
-  Kubernetes 1.25+ are validation targets for this release, not certified platforms.
+- **Kubernetes.** CI runs the end-to-end test on Kubernetes 1.33 and 1.37 (kind) for every change. Versions down to
+  1.30 are expected to work but are not tested. EKS, AKS, GKE (Standard and Autopilot), OpenShift (with
+  `values-openshift.yaml`) and self-managed clusters are validation targets, not certified platforms.
 - **One install per cluster**, with a unique, stable cluster ID. A single replica (`Recreate` strategy) because the
   credential volume has one writer.
 - **Not resolved:** `${env:...}` expansion, secret providers, `--config` merges and remote config providers. The UI
@@ -349,13 +356,15 @@ and never injected where another agent or injector is already present.
 | [docs/configuration.md](docs/configuration.md) | Helm values, environment variables, labels and annotations, `CollectorMonitor` reference |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Symptoms, causes and fixes |
 | [docs/development.md](docs/development.md) | Building, testing, vendor-chart fixtures, releasing |
+| [docs/verifying.md](docs/verifying.md) | Verifying image and chart signatures, SBOM and provenance |
 | [deploy/](deploy/README.md) | Raw manifests for clusters without Helm |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 ## Contributing
 
 Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; `make verify` runs everything
-CI checks.
+CI checks. Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). For questions, support and
+response times see [SUPPORT.md](SUPPORT.md); report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

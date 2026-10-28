@@ -9,7 +9,7 @@ sources:
   - https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator
 maintainers:
   - name: CollectorCtrl Team
-    email: engineering@collectorctrl.com
+    email: connect@collectorctrl.com
 keywords:
   - opentelemetry
   - collector

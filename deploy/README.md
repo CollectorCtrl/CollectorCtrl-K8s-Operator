@@ -18,7 +18,7 @@ Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0` (set in
 
 ## Prerequisites
 
-- Kubernetes 1.25+ and `kubectl` access with permission to create CRDs and cluster RBAC.
+- Kubernetes 1.30+ and `kubectl` access with permission to create CRDs and cluster RBAC.
 - A CollectorCtrl server with Kubernetes role/topology support (server `main` from 2026-10-19 or later), reachable from the cluster over
   `wss://` (port 4320) with a certificate the observer trusts. Certificate
   verification cannot be turned off; supply your CA if it is private.

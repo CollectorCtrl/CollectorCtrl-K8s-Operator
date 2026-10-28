@@ -6,7 +6,7 @@ Please **do not open a public issue** for security problems.
 
 - Use GitHub's private reporting: **Security → Report a vulnerability** on this repository
   ([direct link](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/security/advisories/new)), or
-- email **engineering@collectorctrl.com** with "SECURITY" in the subject.
+- email **connect@collectorctrl.com** with "SECURITY" in the subject.
 
 Include the operator version, Kubernetes platform, what an attacker could do, and steps to reproduce.
 We acknowledge reports within 3 business days and agree a disclosure date with you once a fix is ready.
@@ -44,6 +44,10 @@ The operator is designed so that installing it adds as little risk to a cluster 
 - **Outbound only, verified TLS.** One outbound `wss://` connection per observed collector plus one per cluster.
   TLS verification cannot be disabled; a private CA can be added with `opampCAConfigMap`. The endpoint is pinned
   by the administrator (`OPAMP_SERVER`); a `CollectorMonitor` cannot redirect credentials elsewhere.
+- **Verifiable builds.** Images and the Helm chart are built by GitHub Actions from tagged commits, signed with
+  Sigstore cosign (keyless), and images carry SBOM and SLSA provenance attestations
+  ([docs/verifying.md](docs/verifying.md)). Base images and CI actions are pinned by digest. CodeQL, govulncheck,
+  dependency review and OpenSSF Scorecard run continuously.
 - **Per-identity credentials.** An enrollment token is exchanged for a per-agent credential, stored on a
   dedicated volume and reused on restart. Revoked identities never fall back to enrollment.
 - **Hardened pod.** Distroless non-root image (UID 65532), read-only root filesystem, all capabilities dropped,

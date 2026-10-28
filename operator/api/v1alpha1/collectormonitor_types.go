@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 // operator/api/v1alpha1/collectormonitor_types.go
 // CRD types for the CollectorCtrl K8s Operator.
 // Uses kubebuilder markers for code generation and validation.

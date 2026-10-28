@@ -1,17 +1,39 @@
+# Weekly updates, grouped so each ecosystem arrives as one reviewable PR.
+# Actions and base images are pinned by digest; Dependabot updates the pins.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
     groups:
       kubernetes:
         patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+      golang-x:
+        patterns: ["golang.org/x/*"]
+    commit-message:
+      prefix: "build(deps)"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(deps)"
+
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    groups:
+      base-images:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build(deps)"

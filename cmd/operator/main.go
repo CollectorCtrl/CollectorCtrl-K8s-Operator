@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -87,8 +91,11 @@ func main() {
 		ns := &corev1.Namespace{}
 		err = mgr.GetAPIReader().Get(ctx, client.ObjectKey{Name: "kube-system"}, ns)
 		cancel()
-		if err != nil || ns.UID == "" {
-			setupLog.Error(fmt.Errorf("set CLUSTER_ID or grant get access to namespace kube-system: %v", err), "cluster identity unavailable")
+		if err == nil && ns.UID == "" {
+			err = errors.New("namespace kube-system has no UID")
+		}
+		if err != nil {
+			setupLog.Error(fmt.Errorf("set CLUSTER_ID or grant get access to namespace kube-system: %w", err), "cluster identity unavailable")
 			os.Exit(1)
 		}
 		clusterID = string(ns.UID)

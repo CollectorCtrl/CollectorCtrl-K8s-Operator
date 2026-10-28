@@ -7,6 +7,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 CHART := helm-charts/collectorctrl-operator
 # Values needed to render the chart (the chart refuses to render without a credential source).
 CHART_TEST_VALUES := --set opamp.enrollmentSecret=collectorctrl-auth
+# Tool versions (CI uses the same).
+GOLANGCI_LINT_VERSION ?= v2.15.0
+GOVULNCHECK_VERSION ?= v1.9.0
 
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
@@ -38,8 +41,25 @@ vet: ## Run go vet.
 test: ## Run unit tests with the race detector and coverage.
 	go test -race -coverprofile=cover.out ./...
 
+.PHONY: license-check
+license-check: ## Fail if a Go or shell file lacks the SPDX licence header.
+	@missing="$$(git ls-files '*.go' '*.sh' | xargs grep -L 'SPDX-License-Identifier: Apache-2.0' || true)"; \
+	if [ -n "$$missing" ]; then echo "Missing SPDX header:"; echo "$$missing"; exit 1; fi
+
+.PHONY: lint
+lint: ## Run golangci-lint (same version as CI).
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+
+.PHONY: vuln
+vuln: ## Report known vulnerabilities reachable from the code (govulncheck).
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
 .PHONY: verify
-verify: fmt-check vet test helm-lint ## Everything CI checks before building an image.
+verify: fmt-check vet license-check test helm-lint ## Everything CI checks before building an image (plus lint and vuln).
+
+.PHONY: e2e
+e2e: ## Smoke test on the current kind cluster: make e2e IMG=collectorctrl-operator:e2e (image loaded with kind load).
+	./hack/e2e-kind.sh $(IMG)
 
 .PHONY: vendor-fixtures
 vendor-fixtures: ## Re-render vendor Helm chart fixtures (review expectation changes by hand).
