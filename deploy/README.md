@@ -10,11 +10,11 @@ What gets installed in the `collectorctrl-operator` namespace:
 |------|----------|
 | `namespace.yaml` | The `collectorctrl-operator` namespace |
 | `crd.yaml` | The `CollectorMonitor` CRD (same as the chart's `crds/crd.yaml`) |
-| `rbac.yaml` | ServiceAccount plus read-only ClusterRole/Binding. No Secret access is needed |
+| `rbac.yaml` | ServiceAccount plus read-only ClusterRole/Binding (includes `list` on namespaces and webhooks for the readiness report). No Secret access is needed |
 | `credentials-pvc.yaml` | Retained 128Mi claim for per-workload credentials |
 | `deployment.yaml` | One observer replica, `Recreate` strategy, enrollment auth |
 
-Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.7.0` (set in `deployment.yaml`).
+Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0` (set in `deployment.yaml`).
 
 ## Prerequisites
 

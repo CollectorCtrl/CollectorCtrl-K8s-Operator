@@ -22,7 +22,7 @@ kubectl -n collectorctrl-operator logs <pod> --previous
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `ImagePullBackOff` | The image tag does not exist yet (for example `0.7.0` before the release tag was pushed), or the registry needs credentials | Use `--set image.tag=main --set image.pullPolicy=Always` for testing, or mirror the image and set `imagePullSecrets` |
+| `ImagePullBackOff` | The image tag does not exist yet (for example `0.8.0` before the release tag was pushed), or the registry needs credentials | Use `--set image.tag=main --set image.pullPolicy=Always` for testing, or mirror the image and set `imagePullSecrets` |
 | `CreateContainerConfigError`: secret not found | The enrollment Secret is missing, or the key is not `enrollment-token` | Create it in the operator's namespace (see [installation.md](installation.md#install-with-helm)) |
 | Pod stays `Pending` | The credential PVC cannot be bound | Check `kubectl -n collectorctrl-operator get pvc`; set `credentialStorage.storageClassName` or `existingClaim` |
 | `invalid OpAMP TLS configuration` | The CA file is unreadable or not PEM | Check that the `opampCAConfigMap` key is `ca.crt` and holds PEM certificates |
@@ -81,6 +81,18 @@ kubectl -n collectorctrl-operator logs <pod> --previous
 - **Target is a `service`, not a workload.** The Service's selector matches no workload, or more than one.
 - **A gateway reached through an Ingress or external load balancer** is shown as `external`. This is expected: only
   in-cluster Services are resolved.
+
+## Instrumentation readiness
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| No readiness panel in CollectorCtrl | Server older than the readiness feature, `readiness.enabled=false`, the cluster connection is off, or your role lacks `zerotouch:view` | Upgrade the server; check the Helm values and your role |
+| "Injectors: not checked" | Namespace-scoped install, or the ClusterRole lacks `list` on namespaces or mutatingwebhookconfigurations | Install cluster-scoped, or accept that injector conflicts are not detected |
+| Many workloads show **Language unknown** | Application images rarely name their runtime, and image `ENV` is not read in 0.8 | Expected. Set `collectorctrl.io/language` on the workload (the drawer in CollectorCtrl gives the exact `kubectl annotate` command) |
+| **Ready** although the image sets `JAVA_TOOL_OPTIONS` | Variables baked into the image are invisible without registry access | Every verdict carries this caveat; check the Dockerfile before instrumenting |
+| An agent you know is running is missing | Baked into the image with no trace in the manifest, or the workload has no running pod (webhook-injected agents are found only in pods) | Check the reasons: "No running pod" is stated when it applies |
+| A webhook you rely on is not listed | It does not mutate pods on CREATE, or its name, webhook name and service name do not identify an APM vendor | Open an issue with the webhook's name and service so the classifier can learn it |
+| Workloads in a namespace are missing | The namespace is in `readiness.excludeNamespaces`, or it is the operator's own namespace | Adjust `readiness.excludeNamespaces` |
 
 ## Getting help
 

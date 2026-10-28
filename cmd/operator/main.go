@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (GKE, EKS, AKS, etc.)
@@ -120,7 +121,16 @@ func main() {
 	// Cluster connection: one per cluster, for cluster-scoped data such as the
 	// list of collector-like workloads that have not opted in. Metadata only.
 	if os.Getenv("CLUSTER_OBSERVER") != "false" {
-		if err := mgr.Add(&controllers.ClusterObserver{Monitors: monitors, ClusterName: os.Getenv("CLUSTER_NAME"), Interval: time.Minute}); err != nil {
+		observer := &controllers.ClusterObserver{
+			Monitors: monitors, ClusterName: os.Getenv("CLUSTER_NAME"), Interval: time.Minute,
+			APIReader:        mgr.GetAPIReader(),
+			ReadinessEnabled: os.Getenv("READINESS") != "false",
+		}
+		if d, err := time.ParseDuration(os.Getenv("READINESS_INTERVAL")); err == nil {
+			observer.ReadinessInterval = d
+		}
+		observer.ReadinessExclude = readinessExclusions(os.Getenv("READINESS_EXCLUDE_NAMESPACES"), os.Getenv("POD_NAMESPACE"))
+		if err := mgr.Add(observer); err != nil {
 			setupLog.Error(err, "unable to add cluster observer")
 			os.Exit(1)
 		}
@@ -140,4 +150,23 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// readinessExclusions returns the namespaces the readiness scan skips: the
+// configured list (or the Kubernetes system namespaces) plus the operator's own.
+func readinessExclusions(configured, own string) []string {
+	var out []string
+	if strings.TrimSpace(configured) == "" {
+		out = append(out, controllers.DefaultReadinessExclusions...)
+	} else {
+		for _, ns := range strings.Split(configured, ",") {
+			if ns = strings.TrimSpace(ns); ns != "" {
+				out = append(out, ns)
+			}
+		}
+	}
+	if own != "" {
+		out = append(out, own)
+	}
+	return out
 }

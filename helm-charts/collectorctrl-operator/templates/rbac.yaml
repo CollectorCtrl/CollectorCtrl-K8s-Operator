@@ -43,6 +43,16 @@ rules:
     resources: ["namespaces"]
     resourceNames: ["kube-system"]
     verbs: ["get"]
+{{- if and .Values.clusterObserver.enabled .Values.readiness.enabled }}
+  # Instrumentation readiness: namespace labels/annotations and APM injector
+  # webhooks, to tell which injectors select which pods. Read-only.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    verbs: ["list"]
+{{- end }}
 {{- if .Values.leaderElection.enabled }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

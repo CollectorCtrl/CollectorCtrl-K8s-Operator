@@ -4,6 +4,10 @@ FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
+# go.mod decides the Go version. When a dependency raises it above the base
+# image's Go, fetch the matching toolchain (checksum-verified via sum.golang.org)
+# instead of failing; Dependabot bumps the base image separately.
+ENV GOTOOLCHAIN=auto
 WORKDIR /workspace
 
 COPY go.mod go.sum ./

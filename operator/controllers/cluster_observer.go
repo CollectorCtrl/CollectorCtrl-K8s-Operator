@@ -59,7 +59,15 @@ type ClusterObserver struct {
 	Monitors    *CollectorMonitorReconciler
 	ClusterName string
 	Interval    time.Duration
-	client      *opamp.Client
+	// APIReader reads cluster-scoped objects (namespaces, webhooks) uncached.
+	APIReader client.Reader
+	// ReadinessEnabled turns on the instrumentation readiness report, sent every
+	// ReadinessInterval (default 5 minutes) on the same connection.
+	ReadinessEnabled  bool
+	ReadinessInterval time.Duration
+	ReadinessExclude  []string
+	client            *opamp.Client
+	lastReadiness     time.Time
 }
 
 // NeedLeaderElection keeps a single cluster connection per cluster.
@@ -81,6 +89,13 @@ func (o *ClusterObserver) Start(ctx context.Context) error {
 	for {
 		if err := o.report(ctx, interval); err != nil {
 			log.Error(err, "cluster inventory not reported")
+		}
+		if o.ReadinessEnabled && time.Since(o.lastReadiness) >= o.readinessInterval() {
+			if err := o.reportReadiness(ctx); err != nil {
+				log.Error(err, "instrumentation readiness not reported")
+			} else {
+				o.lastReadiness = time.Now()
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -141,6 +156,32 @@ func (o *ClusterObserver) report(ctx context.Context, interval time.Duration) er
 		return err
 	}
 	return c.ReportInventory(inv)
+}
+
+func (o *ClusterObserver) readinessInterval() time.Duration {
+	switch d := o.ReadinessInterval; {
+	case d <= 0:
+		return 5 * time.Minute
+	case d < time.Minute:
+		return time.Minute
+	case d > time.Hour:
+		return time.Hour
+	default:
+		return d
+	}
+}
+
+func (o *ClusterObserver) reportReadiness(ctx context.Context) error {
+	rep, err := o.Readiness(ctx)
+	if err != nil {
+		return err
+	}
+	rep.ReportIntervalSeconds = int64(o.readinessInterval() / time.Second)
+	c, err := o.ensureClient(ctx)
+	if err != nil {
+		return err
+	}
+	return c.ReportReadiness(rep)
 }
 
 // Inventory lists collector-like workloads from cached metadata and marks the
