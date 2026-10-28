@@ -163,11 +163,32 @@ A workload is listed when a container image's **repository path** (never its tag
 | `injectors_checked` | `false` when namespaces or webhooks could not be listed (namespace-scoped install, RBAC) |
 | `injectors[]` | APM injector webhooks: `name` (MutatingWebhookConfiguration), `vendor`, `mode` (`request` or `selector`), `webhooks[]`, `failure_policy` |
 | `workloads[]` | `namespace`, `kind`, `name`, `uid`, `stack`, `stack_source`, `pod` (running pod inspected, if any), `verdict`, `containers[]` |
-| `containers[]` | `name`, `image`, `language`, `language_source`, `agents[]`, `requests[]`, `selected_by[]`, `launcher[]`, `vendor_env[]`, `verdict`, `reasons[]` |
+| `containers[]` | `name`, `image`, `language`, `language_source`, `agents[]`, `requests[]`, `selected_by[]`, `launcher[]`, `vendor_env[]`, `verdict`, `findings[]`, `reasons[]` (finding messages, for older readers) |
+| `findings[]` | `code` (stable, see below), `severity` (`blocker`, `warning`, `info`), `subject`, `message` |
 | `agents[]` | `vendor`, `language`, `mechanism`, `evidence`, `injected` (only in the running pod) |
 | `launcher[]` | `name`, `source` (`literal`, `configmap`, `secret`, `field`, `resource`, `envfrom-configmap`, `envfrom-secret`), `resolved`, `entries[]` (agent-loading parts only), `other_flags` (count), `in_pod` |
 | `summary` | Workloads per verdict, counted before truncation |
 | `truncated` | `true` if more than 2,000 workloads |
+
+#### Finding codes
+
+Codes are the machine-readable contract: the server maps them to the guided stage and next step, and AI agents
+act on them instead of parsing messages. New codes may be added; existing codes never change meaning.
+
+| Code | Severity | Subject | Meaning |
+| --- | --- | --- | --- |
+| `multiple_vendors` | blocker | vendors, comma-separated | Agents from two vendors are loaded in one process |
+| `injector_adds_vendor` | blocker | webhook configuration | Another vendor's injector selects a pod that already has an agent |
+| `unrecognised_agent` | warning | evidence | An agent is loaded but its vendor is not recognised |
+| `injector_selects` | warning | webhook configuration | A vendor's injector will instrument new pods of an uninstrumented workload |
+| `injection_requested` / `injection_not_applied` | warning | annotation or label | Injection is requested; not yet applied, or applied to no running pod |
+| `vendor_env_without_agent` | warning | variable prefix | Vendor variables (e.g. `DD_*`) without a visible agent loader |
+| `launcher_unreadable` | warning | variable | A launcher variable comes from a Secret or a missing ConfigMap |
+| `envfrom_secret_unread` | warning | Secret | `envFrom` a Secret whose keys could set launcher options |
+| `launcher_set` | info | variable | A launcher variable is set and loads no agent; an injector appends to it |
+| `agent_loaded` | info | vendor | One agent and how it is loaded |
+| `language_unknown`, `language_unsupported` | info | language | The language is not visible, or has no auto-instrumentation path |
+| `java_opts_ignored`, `image_env_not_checked`, `no_running_pod`, `injectors_not_checked` | info | | Context and limits |
 
 ## Inference rules
 
@@ -270,7 +291,9 @@ as one family.
 **Language**: from a language-specific agent, else the command (`java`, `node`, `gunicorn`, `dotnet`, ...), else a
 majority of well-known variable names (`JAVA_HOME`, `NODE_ENV`, `PYTHONUNBUFFERED`, `ASPNETCORE_URLS`,
 `GOMAXPROCS`, ...), else an exact base-image name (`eclipse-temurin`, `node:20-alpine`, `python:3.12-slim`,
-`mcr.microsoft.com/dotnet/aspnet`). Application images rarely reveal more, so many containers stay `unknown`.
+`mcr.microsoft.com/dotnet/aspnet`). Application images rarely reveal more, so many containers stay `unknown`; the
+`collectorctrl.io/language` annotation on the workload (`java`, or per container `app=java,worker=python`) settles
+it and wins over inference.
 
 ```mermaid
 flowchart TD

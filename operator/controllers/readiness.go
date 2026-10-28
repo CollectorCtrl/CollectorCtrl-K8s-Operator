@@ -70,7 +70,7 @@ func (o *ClusterObserver) Readiness(ctx context.Context) (opamp.InstrumentationR
 			return
 		}
 		in := readiness.Input{
-			Template: tmpl, NamespaceLabels: nsLabels[ns], NamespaceAnnotations: nsAnnotations[ns],
+			Template: tmpl, WorkloadAnnotations: obj.GetAnnotations(), NamespaceLabels: nsLabels[ns], NamespaceAnnotations: nsAnnotations[ns],
 			Injectors: rep.Injectors, InjectorsChecked: rep.InjectorsChecked,
 			Lookup: func(name, key string) (string, bool) {
 				cm := &corev1.ConfigMap{}

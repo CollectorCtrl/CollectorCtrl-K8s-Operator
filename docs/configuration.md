@@ -89,6 +89,7 @@ All are optional, and all go on the workload.
 | `collectorctrl.io/stack` | `payments-telemetry` | Group name in CollectorCtrl. Overrides the Helm release or Argo CD app |
 | `collectorctrl.io/role` | `gateway` | Overrides the inferred role: `agent`, `gateway`, `cluster-receiver` or `all-in-one` |
 | `collectorctrl.io/report-config` | `"true"` | Also upload the full collector YAML. Leave it off if the config contains inline credentials |
+| `collectorctrl.io/language` | `java` or `app=java,worker=python` | States the language of an application workload for the readiness report when it cannot be inferred (`java`, `nodejs`, `python`, `dotnet`, `go`). Works on any workload, opted in or not |
 | `collectorctrl.io/report-interval` | `60s` | How often to report (Go duration, 5 s to 1 h, default 30 s) |
 
 [architecture.md](architecture.md#inference-rules) explains how the role, stack and topology are inferred when you

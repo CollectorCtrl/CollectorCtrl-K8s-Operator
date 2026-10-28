@@ -34,6 +34,16 @@ func one(t *testing.T, in Input) Container {
 	return got[0]
 }
 
+// hasCode checks a finding code and, when given, its subject.
+func hasCode(c Container, code string, subject ...string) bool {
+	for _, f := range c.Findings {
+		if f.Code == code && (len(subject) == 0 || f.Subject == subject[0]) {
+			return true
+		}
+	}
+	return false
+}
+
 func hasReason(c Container, fragment string) bool {
 	for _, r := range c.Reasons {
 		if strings.Contains(r, fragment) {
@@ -49,20 +59,20 @@ func TestPlainJavaIsReadyButSaysImageWasNotChecked(t *testing.T) {
 	if c.Verdict != VerdictReady || c.Language != LangJava || c.LanguageSource != "command" {
 		t.Fatalf("got %s/%s/%s", c.Verdict, c.Language, c.LanguageSource)
 	}
-	if !hasReason(c, "Image environment not checked") {
+	if !hasCode(c, CodeImageEnvNotChecked) {
 		t.Errorf("missing image caveat: %v", c.Reasons)
 	}
 }
 
 func TestExistingJavaToolOptionsNeedsMerge(t *testing.T) {
 	c := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "eclipse-temurin:21-jre", Env: env("JAVA_TOOL_OPTIONS", "-Xmx512m -Ddb.password=hunter2")}), InjectorsChecked: true})
-	if c.Verdict != VerdictReview {
-		t.Fatalf("verdict %s, reasons %v", c.Verdict, c.Reasons)
+	if c.Verdict != VerdictReady {
+		t.Fatalf("a set launcher variable without an agent is context, not review: %s, %v", c.Verdict, c.Reasons)
 	}
 	if len(c.Launcher) != 1 || c.Launcher[0].OtherFlags != 2 || len(c.Launcher[0].Entries) != 0 {
 		t.Fatalf("launcher %+v", c.Launcher)
 	}
-	if !hasReason(c, "must append") {
+	if !hasCode(c, CodeLauncherSet, "JAVA_TOOL_OPTIONS") {
 		t.Errorf("reasons %v", c.Reasons)
 	}
 	raw, _ := json.Marshal(c)
@@ -114,7 +124,7 @@ func TestRequestWithoutAgentIsReview(t *testing.T) {
 	template.Annotations["instrumentation.opentelemetry.io/inject-nodejs"] = "true"
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Command: []string{"node", "server.js"}}}}}
 	c := one(t, Input{Template: template, Pod: pod, InjectorsChecked: true})
-	if c.Verdict != VerdictReview || !hasReason(c, "running pod has no agent") {
+	if c.Verdict != VerdictReview || !hasCode(c, CodeInjectionNotApplied) {
 		t.Fatalf("verdict %s: %v", c.Verdict, c.Reasons)
 	}
 }
@@ -141,7 +151,7 @@ func TestSelectorInjectorAgainstExistingAgentConflicts(t *testing.T) {
 		t.Fatalf("new relic + dynatrace webhook: %s %v", nr.Verdict, nr.Reasons)
 	}
 	clean := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "node:20-alpine", Command: []string{"node", "index.js"}}), Injectors: injectors, InjectorsChecked: true, NamespaceLabels: ns})
-	if clean.Verdict != VerdictReview || !hasReason(clean, "injects into new pods") {
+	if clean.Verdict != VerdictReview || !hasCode(clean, CodeInjectorSelects, "dynatrace-webhook") {
 		t.Fatalf("clean node in dynatrace namespace: %s %v", clean.Verdict, clean.Reasons)
 	}
 	other := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "node:20-alpine", Command: []string{"node", "index.js"}}), Injectors: injectors, InjectorsChecked: true, NamespaceLabels: map[string]string{}})
@@ -226,14 +236,14 @@ func TestUnreadSecretMakesReadyAppReview(t *testing.T) {
 	c := corev1.Container{Name: "app", Image: "acme/web", Command: []string{"java", "-jar", "x.jar"},
 		Env: []corev1.EnvVar{{Name: "JAVA_TOOL_OPTIONS", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{Key: "opts"}}}}}
 	res := one(t, Input{Template: tmpl(c), InjectorsChecked: true})
-	if res.Verdict != VerdictReview || !hasReason(res, "Secret, which is never read") {
+	if res.Verdict != VerdictReview || !hasCode(res, CodeLauncherUnreadable, "JAVA_TOOL_OPTIONS") {
 		t.Fatalf("verdict %s %v", res.Verdict, res.Reasons)
 	}
 }
 
 func TestVendorEnvWithoutLoader(t *testing.T) {
 	res := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "acme/web", Command: []string{"java", "-jar", "x.jar"}, Env: env("DD_SERVICE", "web", "DD_ENV", "prod", "OTEL_SERVICE_NAME", "web")}), InjectorsChecked: true})
-	if res.Verdict != VerdictReview || !hasReason(res, "2 DD_* variables") || hasReason(res, "OTEL_") {
+	if res.Verdict != VerdictReview || !hasCode(res, CodeVendorEnvNoAgent, "DD_") || hasCode(res, CodeVendorEnvNoAgent, "OTEL_") || !hasReason(res, "2 DD_* variables") {
 		t.Fatalf("verdict %s %v", res.Verdict, res.Reasons)
 	}
 }
@@ -314,5 +324,41 @@ func TestSplunkOperatorIsNotAConflictWithOTelAgents(t *testing.T) {
 	c := one(t, Input{Template: template, Injectors: ClassifyWebhooks([]admissionv1.MutatingWebhookConfiguration{splunk}), InjectorsChecked: true})
 	if c.Verdict != VerdictInstrumented || len(c.SelectedBy) != 1 {
 		t.Fatalf("verdict %s selected %v reasons %v", c.Verdict, c.SelectedBy, c.Reasons)
+	}
+}
+
+func TestFindingsCarryCodesAndSeverities(t *testing.T) {
+	c := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "acme/app",
+		Env:  env("JAVA_TOOL_OPTIONS", "-javaagent:/dd/dd-java-agent.jar"),
+		Args: []string{"java", "-javaagent:/otel/opentelemetry-javaagent.jar", "-jar", "app.jar"}})})
+	if !hasCode(c, CodeMultipleVendors, "datadog,opentelemetry") || !hasCode(c, CodeAgentLoaded, "datadog") || !hasCode(c, CodeNoRunningPod) {
+		t.Fatalf("findings %+v", c.Findings)
+	}
+	for _, f := range c.Findings {
+		if f.Severity != SeverityBlocker && f.Severity != SeverityWarning && f.Severity != SeverityInfo {
+			t.Errorf("bad severity %+v", f)
+		}
+		if f.Code == CodeMultipleVendors && f.Severity != SeverityBlocker {
+			t.Errorf("conflict is not a blocker: %+v", f)
+		}
+	}
+	if len(c.Reasons) != len(c.Findings) {
+		t.Errorf("reasons should mirror findings")
+	}
+}
+
+func TestLanguageAnnotationResolvesUnknown(t *testing.T) {
+	template := tmpl(corev1.Container{Name: "app", Image: "acme/app"}, corev1.Container{Name: "worker", Image: "acme/worker"})
+	got := Analyze(Input{Template: template, InjectorsChecked: true, WorkloadAnnotations: map[string]string{AnnotationLanguage: "app=java, worker=python"}})
+	if len(got) != 2 || got[0].Language != LangJava || got[0].LanguageSource != "annotation" || got[0].Verdict != VerdictReady || got[1].Language != LangPython {
+		t.Fatalf("got %+v", got)
+	}
+	whole := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "acme/app"}), WorkloadAnnotations: map[string]string{AnnotationLanguage: "Node.js"}})
+	if whole.Language != LangUnknown {
+		t.Errorf("invalid value accepted: %s", whole.Language)
+	}
+	ok := one(t, Input{Template: tmpl(corev1.Container{Name: "app", Image: "acme/app"}), WorkloadAnnotations: map[string]string{AnnotationLanguage: "nodejs"}})
+	if ok.Language != LangNode {
+		t.Errorf("got %s", ok.Language)
 	}
 }

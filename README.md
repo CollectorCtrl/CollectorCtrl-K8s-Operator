@@ -194,6 +194,12 @@ flowchart LR
 AppDynamics, Dynatrace, Elastic and Instana, plus unrecognised `-javaagent` jars and CLR profilers. Agents that an
 admission webhook added are found in the running pod and marked *injected*.
 
+**Built for people and AI agents.** Each verdict comes with findings that carry stable codes (`multiple_vendors`,
+`injector_selects`, `language_unknown`, ...). CollectorCtrl turns them into a guided path (*resolve conflicts → review
+→ identify language → ready*) and a next step per workload, with a copyable command where one applies. The same
+data is in the API and in the `k8s_instrumentation_readiness` MCP tool. When the language can't be inferred, set
+it with the `collectorctrl.io/language` annotation.
+
 **What it deliberately does not see.** The operator never contacts an image registry, so variables baked into an
 image (`ENV JAVA_TOOL_OPTIONS=...` in a Dockerfile) are invisible; every verdict says so. Values from Secrets are
 never read and are reported as unknown. Launcher values are reduced to agent paths, module names and profiler IDs;

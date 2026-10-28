@@ -14,6 +14,10 @@ All notable changes to this project are documented here. The format follows
   profilers), injection requests, which APM injector webhooks select the pod, launcher variables an injector would
   have to merge with, and a verdict (`conflict`, `review`, `ready`, `unknown`, `unsupported`, `instrumented`) with
   reasons. Agents added by admission webhooks are found in the newest running pod and marked as injected.
+- Findings with stable codes and severities (`multiple_vendors`, `injector_adds_vendor`, `injector_selects`,
+  `launcher_unreadable`, `language_unknown`, ...) on every container, so UIs and AI agents act on codes rather than
+  text. `reasons[]` mirrors the finding messages.
+- `collectorctrl.io/language` workload annotation to state the language when it cannot be inferred.
 - Helm values `readiness.enabled`, `readiness.interval`, `readiness.excludeNamespaces`; environment variables
   `READINESS`, `READINESS_INTERVAL`, `READINESS_EXCLUDE_NAMESPACES`.
 

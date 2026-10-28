@@ -88,7 +88,7 @@ kubectl -n collectorctrl-operator logs <pod> --previous
 | --- | --- | --- |
 | No readiness panel in CollectorCtrl | Server older than the readiness feature, `readiness.enabled=false`, the cluster connection is off, or your role lacks `zerotouch:view` | Upgrade the server; check the Helm values and your role |
 | "Injectors: not checked" | Namespace-scoped install, or the ClusterRole lacks `list` on namespaces or mutatingwebhookconfigurations | Install cluster-scoped, or accept that injector conflicts are not detected |
-| Many workloads show **Language unknown** | Application images rarely name their runtime, and image `ENV` is not read in 0.8 | Expected. The command line, well-known variables or a standard base image name are needed to tell |
+| Many workloads show **Language unknown** | Application images rarely name their runtime, and image `ENV` is not read in 0.8 | Expected. Set `collectorctrl.io/language` on the workload (the drawer in CollectorCtrl gives the exact `kubectl annotate` command) |
 | **Ready** although the image sets `JAVA_TOOL_OPTIONS` | Variables baked into the image are invisible without registry access | Every verdict carries this caveat; check the Dockerfile before instrumenting |
 | An agent you know is running is missing | Baked into the image with no trace in the manifest, or the workload has no running pod (webhook-injected agents are found only in pods) | Check the reasons: "No running pod" is stated when it applies |
 | A webhook you rely on is not listed | It does not mutate pods on CREATE, or its name, webhook name and service name do not identify an APM vendor | Open an issue with the webhook's name and service so the classifier can learn it |

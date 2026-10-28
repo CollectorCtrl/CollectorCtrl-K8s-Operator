@@ -107,6 +107,7 @@ type Container struct {
 	Launcher       []LauncherVar `json:"launcher,omitempty"`
 	VendorEnv      []VendorEnv   `json:"vendor_env,omitempty"`
 	Verdict        string        `json:"verdict"`
+	Findings       []Finding     `json:"findings"`
 	Reasons        []string      `json:"reasons"`
 }
 
@@ -126,12 +127,43 @@ type Input struct {
 	// NamespaceLabels and NamespaceAnnotations of the workload's namespace.
 	NamespaceLabels      map[string]string
 	NamespaceAnnotations map[string]string
+	// WorkloadAnnotations are the workload's own annotations (not the pod
+	// template's), for overrides such as collectorctrl.io/language.
+	WorkloadAnnotations map[string]string
 	// Injectors are the pod-mutating webhooks found in the cluster.
 	Injectors []Injector
 	// InjectorsChecked is false when webhooks could not be listed.
 	InjectorsChecked bool
 	Lookup           Lookup
 	LookupAll        LookupAll
+}
+
+// AnnotationLanguage states a workload's language when it cannot be
+// inferred: "java", or per container "app=java,worker=python".
+const AnnotationLanguage = "collectorctrl.io/language"
+
+func languageOverride(ann map[string]string, container string) (string, bool) {
+	raw := strings.TrimSpace(ann[AnnotationLanguage])
+	if raw == "" {
+		return "", false
+	}
+	valid := func(l string) bool {
+		l = strings.ToLower(strings.TrimSpace(l))
+		return supported(l) || l == LangGo
+	}
+	if !strings.Contains(raw, "=") {
+		if valid(raw) {
+			return strings.ToLower(raw), true
+		}
+		return "", false
+	}
+	for _, part := range strings.Split(raw, ",") {
+		name, lang, ok := strings.Cut(part, "=")
+		if ok && strings.TrimSpace(name) == container && valid(lang) {
+			return strings.ToLower(strings.TrimSpace(lang)), true
+		}
+	}
+	return "", false
 }
 
 // NotApplication reports whether an image is infrastructure rather than an
@@ -235,6 +267,9 @@ func analyzeContainer(in Input, c corev1.Container) Container {
 	res.VendorEnv = vendorEnv(tmpl)
 
 	res.Language, res.LanguageSource = detectLanguage(c, tmpl, res.Agents)
+	if lang, ok := languageOverride(in.WorkloadAnnotations, c.Name); ok {
+		res.Language, res.LanguageSource = lang, "annotation"
+	}
 
 	if in.InjectorsChecked {
 		podLabels := in.Template.Labels
@@ -271,18 +306,59 @@ func supported(lang string) bool {
 	return false
 }
 
-// decide sets the verdict and the reasons a reader needs to act on it.
+// Finding severities.
+const (
+	SeverityBlocker = "blocker" // must be resolved before any instrumentation
+	SeverityWarning = "warning" // decide or confirm before instrumenting
+	SeverityInfo    = "info"    // context; nothing to do
+)
+
+// Finding codes are a stable, machine-readable contract: the server maps them
+// to next steps, and UIs and AI agents act on them without parsing Message.
+// New codes may be added; existing codes never change meaning.
+const (
+	CodeMultipleVendors     = "multiple_vendors"         // blocker; subject: vendors, comma-separated
+	CodeInjectorAddsVendor  = "injector_adds_vendor"     // blocker; subject: webhook configuration name
+	CodeUnrecognisedAgent   = "unrecognised_agent"       // warning; subject: evidence
+	CodeInjectorSelects     = "injector_selects"         // warning; subject: webhook configuration name
+	CodeInjectionRequested  = "injection_requested"      // warning; subject: annotation or label
+	CodeInjectionNotApplied = "injection_not_applied"    // warning; subject: annotation or label
+	CodeVendorEnvNoAgent    = "vendor_env_without_agent" // warning; subject: variable prefix
+	CodeLauncherSet         = "launcher_set"             // warning; subject: variable name
+	CodeLauncherUnreadable  = "launcher_unreadable"      // warning; subject: variable name
+	CodeEnvFromSecretUnread = "envfrom_secret_unread"    // warning; subject: Secret name
+	CodeAgentLoaded         = "agent_loaded"             // info; subject: vendor
+	CodeLanguageUnknown     = "language_unknown"         // info
+	CodeLanguageUnsupported = "language_unsupported"     // info; subject: language
+	CodeJavaOptsIgnored     = "java_opts_ignored"        // info
+	CodeImageEnvNotChecked  = "image_env_not_checked"    // info
+	CodeNoRunningPod        = "no_running_pod"           // info
+	CodeInjectorsNotChecked = "injectors_not_checked"    // info
+)
+
+// Finding is one fact behind a verdict.
+type Finding struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Subject  string `json:"subject,omitempty"`
+	Message  string `json:"message"`
+}
+
+// decide sets the verdict and the findings behind it. Reasons mirrors the
+// finding messages for readers of older payloads.
 func decide(res *Container, in Input, sawPod bool) {
-	reasons := []string{}
-	add := func(format string) { reasons = append(reasons, format) }
+	var findings []Finding
+	add := func(code, severity, subject, message string) {
+		findings = append(findings, Finding{Code: code, Severity: severity, Subject: subject, Message: message})
+	}
 
 	vendors := vendorNames(res.Agents)
 	for _, a := range res.Agents {
 		how := a.Evidence
 		if a.Injected {
-			how += " (added by an admission webhook)"
+			how += ", added by an admission webhook"
 		}
-		add(vendorTitle(a.Vendor) + " " + a.Language + " agent: " + how)
+		add(CodeAgentLoaded, SeverityInfo, a.Vendor, vendorTitle(a.Vendor)+" "+langTitle(a.Language)+" agent ("+how+")")
 	}
 
 	// Vendors an injector would add at the next pod start.
@@ -301,6 +377,11 @@ func decide(res *Container, in Input, sawPod bool) {
 			}
 		}
 	}
+	pendingVendors := make([]string, 0, len(pending))
+	for v := range pending {
+		pendingVendors = append(pendingVendors, v)
+	}
+	sort.Strings(pendingVendors)
 
 	verdict := ""
 	switch {
@@ -310,17 +391,17 @@ func decide(res *Container, in Input, sawPod bool) {
 		for i, v := range vendors {
 			titles[i] = vendorTitle(v)
 		}
-		add("More than one APM vendor is loaded: " + strings.Join(titles, ", ") + ". Agents from different vendors in one process conflict")
+		add(CodeMultipleVendors, SeverityBlocker, strings.Join(vendors, ","), strings.Join(titles, " and ")+" agents are both loaded in one process")
 	case len(vendors) == 1 && len(pending) > 0:
 		verdict = VerdictConflict
-		for v, name := range pending {
-			add("Webhook " + name + " (" + vendorTitle(v) + ") also selects this pod and would add a second vendor's agent")
+		for _, v := range pendingVendors {
+			add(CodeInjectorAddsVendor, SeverityBlocker, pending[v], vendorTitle(v)+"'s injector ("+pending[v]+") would add a second agent at the next restart")
 		}
 	case len(vendors) == 1:
 		verdict = VerdictInstrumented
 		if vendors[0] == "unknown" {
 			verdict = VerdictReview
-			add("An agent is loaded but its vendor is not recognised; confirm before adding another")
+			add(CodeUnrecognisedAgent, SeverityWarning, res.Agents[0].Evidence, "An agent is loaded but its vendor is not recognised")
 		}
 	}
 
@@ -328,24 +409,24 @@ func decide(res *Container, in Input, sawPod bool) {
 		switch {
 		case res.Language == LangUnknown:
 			verdict = VerdictUnknown
-			add("Language not recognisable from the command, environment or image name")
+			add(CodeLanguageUnknown, SeverityInfo, "", "Language not recognisable from the command, environment or image name")
 		case !supported(res.Language):
 			verdict = VerdictUnsupported
-			add("No OpenTelemetry auto-instrumentation path for " + res.Language + " here; instrument it with the SDK")
+			add(CodeLanguageUnsupported, SeverityInfo, res.Language, langTitle(res.Language)+" has no auto-instrumentation path; use the OpenTelemetry SDK")
 		default:
 			verdict = VerdictReady
 		}
 		if verdict == VerdictReady || verdict == VerdictUnknown {
-			for v, name := range pending {
+			for _, v := range pendingVendors {
 				verdict = VerdictReview
-				add("Webhook " + name + " (" + vendorTitle(v) + ") injects into new pods here; decide which vendor owns this workload")
+				add(CodeInjectorSelects, SeverityWarning, pending[v], vendorTitle(v)+"'s injector ("+pending[v]+") will instrument new pods here")
 			}
 			for _, r := range res.Requests {
 				verdict = VerdictReview
 				if sawPod {
-					add(vendorTitle(r.Vendor) + " injection is requested (" + r.Via + ") but the running pod has no agent; check the injector is installed and configured")
+					add(CodeInjectionNotApplied, SeverityWarning, r.Via, vendorTitle(r.Vendor)+" injection is requested but the running pod has no agent")
 				} else {
-					add(vendorTitle(r.Vendor) + " injection is requested (" + r.Via + ")")
+					add(CodeInjectionRequested, SeverityWarning, r.Via, vendorTitle(r.Vendor)+" injection is requested")
 				}
 			}
 			for _, e := range res.VendorEnv {
@@ -353,7 +434,7 @@ func decide(res *Container, in Input, sawPod bool) {
 					continue // OTEL_* also configure SDKs and collectors; not a conflict
 				}
 				verdict = Worst(verdict, VerdictReview)
-				add(strconv.Itoa(e.Count) + " " + e.Prefix + "* variables are set but no " + vendorTitle(e.Vendor) + " agent loader is visible; the agent may be in the image")
+				add(CodeVendorEnvNoAgent, SeverityWarning, e.Prefix, strconv.Itoa(e.Count)+" "+e.Prefix+"* variables set, but no "+vendorTitle(e.Vendor)+" agent is visible (it may be in the image)")
 			}
 		}
 	}
@@ -367,29 +448,46 @@ func decide(res *Container, in Input, sawPod bool) {
 			switch {
 			case v.Source == "envfrom-secret":
 				verdict = Worst(verdict, VerdictReview)
-				add(v.Name + " is not read; it could set JAVA_TOOL_OPTIONS or similar, so an injector must not assume they are empty")
+				secret := strings.TrimPrefix(v.Name, "envFrom Secret ")
+				add(CodeEnvFromSecretUnread, SeverityWarning, secret, "Variables from Secret "+secret+" are not read and could set launcher options")
 			case !v.Resolved:
 				verdict = Worst(verdict, VerdictReview)
-				add(v.Name + " comes from " + sourceText[v.Source] + "; an injector must merge with its unknown value")
+				add(CodeLauncherUnreadable, SeverityWarning, v.Name, v.Name+" comes from "+sourceText[v.Source])
 			case v.Name == "JAVA_OPTS":
-				add("JAVA_OPTS is set; the JVM does not read it, only launch scripts do")
+				add(CodeJavaOptsIgnored, SeverityInfo, v.Name, "JAVA_OPTS is set; only launch scripts read it, not the JVM")
 			default:
-				verdict = Worst(verdict, VerdictReview)
-				add(v.Name + " is already set in the manifest; an injector must append to it, not replace it")
+				// Set but loading no agent: an injector appends to it. Context,
+				// not a blocker; CollectorCtrl's injector always merges.
+				add(CodeLauncherSet, SeverityInfo, v.Name, v.Name+" is already set (no agent); an injector must append to it, not replace it")
 			}
 		}
 	}
 
 	if verdict != VerdictInstrumented && verdict != VerdictConflict && verdict != VerdictUnsupported {
-		add("Image environment not checked: variables baked into the image (Dockerfile ENV) are not visible without registry access")
+		add(CodeImageEnvNotChecked, SeverityInfo, "", "Image environment (Dockerfile ENV) not checked")
 	}
 	if !sawPod {
-		add("No running pod: agents added by admission webhooks cannot be seen")
+		add(CodeNoRunningPod, SeverityInfo, "", "No running pod, so webhook-injected agents cannot be seen")
 	}
 	if !in.InjectorsChecked {
-		add("Admission webhooks could not be listed (namespace-scoped install or missing permission)")
+		add(CodeInjectorsNotChecked, SeverityInfo, "", "Admission webhooks could not be listed")
 	}
-	res.Verdict, res.Reasons = verdict, reasons
+	reasons := make([]string, 0, len(findings))
+	for _, f := range findings {
+		reasons = append(reasons, f.Message)
+	}
+	res.Verdict, res.Findings, res.Reasons = verdict, findings, reasons
+}
+
+var langTitles = map[string]string{
+	LangJava: "Java", LangNode: "Node.js", LangPython: "Python", LangDotNet: ".NET", LangGo: "Go", LangNative: "native", LangUnknown: "unknown",
+}
+
+func langTitle(l string) string {
+	if t, ok := langTitles[l]; ok {
+		return t
+	}
+	return l
 }
 
 // relevantLauncher limits merge warnings to the variables the container's

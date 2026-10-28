@@ -82,10 +82,10 @@ func TestReadinessReport(t *testing.T) {
 	if o1.Name != "orders" || o1.Verdict != readiness.VerdictInstrumented || o1.Pod != "orders-7d-new" || o1.Stack != "shop" {
 		t.Errorf("orders %+v", o1)
 	}
-	if w1.Name != "web" || w1.Verdict != readiness.VerdictReview || w1.Pod != "" {
+	if w1.Name != "web" || w1.Verdict != readiness.VerdictReady || w1.Pod != "" {
 		t.Errorf("web %+v", w1)
 	}
-	if rep.Summary[readiness.VerdictInstrumented] != 1 || rep.Summary[readiness.VerdictReview] != 1 {
+	if rep.Summary[readiness.VerdictInstrumented] != 1 || rep.Summary[readiness.VerdictReady] != 1 {
 		t.Errorf("summary %v", rep.Summary)
 	}
 	raw, _ := json.Marshal(rep)
@@ -105,8 +105,8 @@ func TestReadinessWithoutWebhookAccess(t *testing.T) {
 		t.Fatalf("got %+v", rep)
 	}
 	found := false
-	for _, r := range rep.Workloads[0].Containers[0].Reasons {
-		found = found || strings.Contains(r, "webhooks could not be listed")
+	for _, f := range rep.Workloads[0].Containers[0].Findings {
+		found = found || f.Code == readiness.CodeInjectorsNotChecked
 	}
 	if !found {
 		t.Errorf("reasons %v", rep.Workloads[0].Containers[0].Reasons)
