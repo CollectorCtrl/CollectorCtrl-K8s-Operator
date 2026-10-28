@@ -39,6 +39,11 @@ All notable changes to this project are documented here. The format follows
 - The image build follows the Go version in `go.mod` (`GOTOOLCHAIN=auto`), so dependency updates that raise it no
   longer break the build.
 
+### Fixed
+- The `CollectorMonitor` CRD schema had a mis-indented `enum` under condition `status`, which made the API server
+  reject the CRD on install (found by the new kind end-to-end test). A unit test now decodes both CRD copies
+  strictly and checks they are identical.
+
 ### Security
 - Fixes reachable vulnerabilities in `golang.org/x/net` (HTTP/2: GO-2026-6603, -6610, -6611, -6612, -6617) and in the
   Go standard library by moving to `golang.org/x/net` 0.62 and Go 1.26.10.
