@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 package controllers
 
 import (
@@ -6,6 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -148,8 +152,8 @@ func (r *CollectorMonitorReconciler) observe(ctx context.Context, monitor *v1.Co
 		}
 		observation.Pods = append(observation.Pods, p)
 	}
-	monitor.Status.AgentCount = int32(len(pods))
-	monitor.Status.HealthyAgents = int32(observation.ReadyPods)
+	monitor.Status.AgentCount = clampInt32(len(pods))
+	monitor.Status.HealthyAgents = clampInt32(observation.ReadyPods)
 	if err := c.Report(observation); err != nil {
 		return 0, "HealthReported", err
 	}
@@ -684,4 +688,15 @@ func configKey(cm *corev1.ConfigMap, t *corev1.PodTemplateSpec, mounted map[stri
 		}
 	}
 	return "", ambiguous(len(cm.Data))
+}
+
+// clampInt32 converts a count for a status field without overflow.
+func clampInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < 0 {
+		return 0
+	}
+	return int32(n) //nolint:gosec // G115: bounds checked above
 }

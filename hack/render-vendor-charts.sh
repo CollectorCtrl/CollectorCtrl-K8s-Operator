@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 CollectorCtrl
 # Regenerates the vendor-chart fixtures used by
 # operator/controllers/vendorcharts_test.go. Chart versions are pinned; after
 # bumping one, rerun this script and review every changed expectation by hand.

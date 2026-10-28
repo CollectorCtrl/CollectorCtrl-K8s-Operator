@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 // pkg/api/types.go
 // Shared types used by both CollectorCtrl Server and K8s Operator.
 // This package MUST NOT import server-specific or k8s-specific packages.

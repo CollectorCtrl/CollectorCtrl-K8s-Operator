@@ -49,6 +49,18 @@ make run
   manifests rendered from the upstream, Splunk, Coralogix and AWS ADOT charts. To bump a chart version, edit
   `hack/render-vendor-charts.sh`, run `make vendor-fixtures`, and review every changed expectation by hand. A new
   fixture file fails until its expectations are added; the failure prints what was observed.
+- **End-to-end on kind** (`hack/e2e-kind.sh`, run by CI on two Kubernetes versions). It installs the chart with a
+  local image, adds an opted-in collector and two applications, checks that the service account has exactly the
+  documented permissions (and no Secret access), that the operator reconciles without RBAC errors or restarts, and
+  that uninstalling keeps the credential volume. No server is needed:
+
+  ```bash
+  kind create cluster --name e2e
+  docker build -f Dockerfile.operator -t collectorctrl-operator:e2e .
+  kind load docker-image collectorctrl-operator:e2e --name e2e
+  make e2e IMG=collectorctrl-operator:e2e
+  ```
+
 - **End-to-end with the server.** The server repository has `scripts/test-k8s-integration.ps1`, which starts a
   server, deploys the operator into kind, opts in sample collectors and checks what the API reports.
 
@@ -60,19 +72,39 @@ them to `pkg/api` and the server's validation in the same change, and document t
 
 ## Releasing
 
-1. Update `CHANGELOG.md`: move entries from *Unreleased* to the new version.
-2. Set `appVersion` in `helm-charts/collectorctrl-operator/Chart.yaml` to the new version. Bump the chart `version`,
-   and update its `artifacthub.io/changes` annotation.
-3. Update the image tag in `deploy/deployment.yaml`.
-4. Merge to `main`, then tag the merge commit:
+Releases are cut from `main` by pushing a tag; GitHub Actions does the rest.
+
+1. In one pull request:
+   - move the *Unreleased* entries in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`;
+   - set `appVersion` in `helm-charts/collectorctrl-operator/Chart.yaml` to `X.Y.Z`, bump the chart `version` and
+     update its `artifacthub.io/changes` annotation;
+   - set the image tag in `deploy/deployment.yaml` and the README badge/commands if the chart version changed.
+2. Merge it, then tag the merge commit:
 
    ```bash
-   git tag -a v0.8.0 -m "v0.8.0"
-   git push origin v0.8.0
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
    ```
 
-   CI publishes `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0` and `:0.8` for linux/amd64 and
-   linux/arm64, with the version embedded in the binary.
-5. Create a GitHub release from the tag, with the changelog section as notes.
+3. Two workflows run on the tag:
+   - **CI** (`build-operator.yml`) verifies, runs the kind end-to-end tests, then builds
+     `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:X.Y.Z` and `:X.Y` for linux/amd64 and linux/arm64
+     with SBOM and provenance, and signs it with cosign.
+   - **Release** (`release.yml`) checks that the tag, chart `appVersion`, changelog section and raw-manifest image
+     tag agree, pushes the signed chart to `oci://ghcr.io/collectorctrl/charts`, and creates the GitHub Release
+     with notes from the changelog, the chart package, the raw manifests and `SHA256SUMS`. Versions with a
+     hyphen (`0.9.0-rc.1`) become pre-releases.
 
-Each push to `main` also publishes `:main` and `:latest`, for testing only.
+Tags are never moved or reused. Each push to `main` also publishes `:main` and `:latest`, for testing only.
+
+## Continuous integration
+
+| Workflow | Runs on | Checks |
+| --- | --- | --- |
+| CI | push, pull request, tags | `make verify`, golangci-lint, govulncheck, kind end-to-end tests (two Kubernetes versions), image build; push and sign outside PRs |
+| CodeQL | push, pull request, weekly | Go security analysis (`security-extended`) |
+| Dependency review | pull request | New dependencies with known vulnerabilities (high and above) or incompatible licences |
+| OpenSSF Scorecard | push to `main`, weekly | Repository security practices; results in code scanning and on the badge |
+| Release | tags | Chart, raw manifests and GitHub Release |
+
+All actions are pinned to commit SHAs; Dependabot proposes grouped updates every Monday.

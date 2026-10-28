@@ -1,5 +1,8 @@
 //go:build k8s_integration
 
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 // A process boundary for the real server/operator integration test. Credentials
 // arrive through stdin, never command-line arguments or diagnostic output.
 package main

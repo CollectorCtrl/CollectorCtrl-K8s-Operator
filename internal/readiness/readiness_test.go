@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 package readiness
 
 import (
@@ -218,12 +221,12 @@ func TestEnvFromConfigMapAndSecret(t *testing.T) {
 	}
 	var nodeOpts, secretVar, secretFrom bool
 	for _, v := range res.Launcher {
-		switch {
-		case v.Name == "NODE_OPTIONS":
+		switch v.Name {
+		case "NODE_OPTIONS":
 			nodeOpts = len(v.Entries) == 1 && v.Entries[0] == "--require dd-trace/init" && v.OtherFlags == 1 && v.Source == "envfrom-configmap"
-		case v.Name == "JDK_JAVA_OPTIONS":
+		case "JDK_JAVA_OPTIONS":
 			secretVar = !v.Resolved && v.Source == "secret"
-		case v.Name == "envFrom Secret web-secrets":
+		case "envFrom Secret web-secrets":
 			secretFrom = !v.Resolved
 		}
 	}

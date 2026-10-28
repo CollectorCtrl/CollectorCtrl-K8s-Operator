@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 package controllers
 
 import (
@@ -142,7 +145,7 @@ func TestSyntheticMonitorAnnotations(t *testing.T) {
 	ds.Annotations = map[string]string{AnnContainer: "otel", AnnConfigKey: "relay.yaml", AnnReportInterval: "45s", AnnReportConfig: "true"}
 	m := syntheticMonitor(ds, "DaemonSet", "wss://x/v1/opamp")
 	if m.Spec.CollectorContainer != "otel" || m.Spec.ConfigMapSelector == nil || m.Spec.ConfigMapSelector.Key != "relay.yaml" ||
-		m.Spec.HealthCheck.Interval.Duration.Seconds() != 45 || !m.Spec.ReportConfig || m.Spec.WorkloadSelector.Name != "agent" {
+		m.Spec.HealthCheck.Interval.Seconds() != 45 || !m.Spec.ReportConfig || m.Spec.WorkloadSelector.Name != "agent" {
 		t.Fatalf("annotations not applied: %+v", m.Spec)
 	}
 	if syntheticMonitor(labelledAgent(), "DaemonSet", "").Spec.ReportConfig {

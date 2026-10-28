@@ -7,7 +7,7 @@ to install the operator. Raw manifests for clusters without Helm are in [`deploy
 
 | Requirement | Details |
 | --- | --- |
-| Kubernetes | 1.25 or later; permission to create a CRD, a ClusterRole and a ClusterRoleBinding (or a namespace-scoped install, see below) |
+| Kubernetes | 1.30 or later (CI tests 1.33 and 1.37); permission to create a CRD, a ClusterRole and a ClusterRoleBinding (or a namespace-scoped install, see below) |
 | CollectorCtrl server | One with Kubernetes role and topology support (server `main` from 2026-10-19 or later) |
 | Network | Pods can reach the server over `wss://` (default port 4320) and the Kubernetes API |
 | TLS | The server certificate is trusted by the image's system roots or by a CA you provide. Verification cannot be turned off |
@@ -21,12 +21,16 @@ kubectl create namespace collectorctrl-operator
 kubectl -n collectorctrl-operator create secret generic collectorctrl-auth \
   --from-literal=enrollment-token=cce_YOUR_TOKEN
 
-helm upgrade --install collectorctrl-operator ./helm-charts/collectorctrl-operator \
-  --namespace collectorctrl-operator \
+helm upgrade --install collectorctrl-operator oci://ghcr.io/collectorctrl/charts/collectorctrl-operator \
+  --version 0.4.0 --namespace collectorctrl-operator \
   --set opamp.server=wss://collectorctrl.example.com:4320/v1/opamp \
   --set opamp.enrollmentSecret=collectorctrl-auth \
   --set clusterName=prod-eu
 ```
+
+The chart is published as a signed OCI artifact from release 0.8.0 (chart 0.4.0) on; verify it as described in
+[verifying.md](verifying.md). From a checkout, use `./helm-charts/collectorctrl-operator` instead. Air-gapped
+clusters can mirror both the chart and the image to an internal registry.
 
 Check it started and connected:
 

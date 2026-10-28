@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 package opamp
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // G501: see instanceUID
 	"crypto/sha256"
 	"fmt"
 	"net/http"
@@ -42,7 +45,12 @@ func ApprovedEndpoint(configured, requested string) (string, error) {
 	return approved, nil
 }
 
-func (c *Client) instanceUID() uuid.UUID { return uuid.UUID(md5.Sum([]byte(c.config.AgentID))) }
+// instanceUID derives the OpAMP instance UID from the agent ID. MD5 is used as
+// a stable 128-bit mapping, not for security; changing it would give every
+// existing identity a new UID.
+func (c *Client) instanceUID() uuid.UUID {
+	return uuid.UUID(md5.Sum([]byte(c.config.AgentID))) //nolint:gosec // G401: identifier derivation, not a security control
+}
 
 func (c *Client) credentialPath() string {
 	key := sha256.Sum256([]byte(c.config.Endpoint + "\x00" + c.instanceUID().String()))

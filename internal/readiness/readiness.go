@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
 // Package readiness works out, from Kubernetes objects alone, whether an
 // application container could take an OpenTelemetry auto-instrumentation agent:
 // which language it runs, which APM agents (any vendor) are already loaded or
