@@ -108,7 +108,7 @@ echo "RBAC ok"
 step "Reconcile for a while, then read the logs"
 sleep 45
 LOGS="$(kubectl -n "$NS" logs "deploy/${RELEASE}")"
-grep -q '"starting manager"' <<<"$LOGS" || fail "no startup log line"
+grep -q 'starting manager' <<<"$LOGS" || fail "no startup log line"
 if grep -iE 'is forbidden|panic|unable to create controller' <<<"$LOGS"; then fail "errors in operator logs"; fi
 RESTARTS="$(kubectl -n "$NS" get pods -l app.kubernetes.io/name=collectorctrl-operator -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')"
 [ "${RESTARTS:-0}" = "0" ] || fail "operator restarted ${RESTARTS} times"

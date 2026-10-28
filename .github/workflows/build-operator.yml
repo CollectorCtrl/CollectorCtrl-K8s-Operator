@@ -81,7 +81,9 @@ jobs:
         run: hack/e2e-kind.sh collectorctrl-operator:e2e
 
   image:
-    name: Build${{ github.event_name != 'pull_request' && ', sign and push' || '' }} image
+    # Fixed name: branch protection requires this check by name. Pushing and
+    # signing happen only outside pull requests.
+    name: Build image
     needs: [verify, e2e]
     runs-on: ubuntu-latest
     permissions:
