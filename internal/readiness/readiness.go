@@ -306,7 +306,11 @@ func decide(res *Container, in Input, sawPod bool) {
 	switch {
 	case len(vendors) > 1:
 		verdict = VerdictConflict
-		add("More than one APM vendor is loaded: " + strings.Join(vendors, ", ") + ". Agents from different vendors in one process conflict")
+		titles := make([]string, len(vendors))
+		for i, v := range vendors {
+			titles[i] = vendorTitle(v)
+		}
+		add("More than one APM vendor is loaded: " + strings.Join(titles, ", ") + ". Agents from different vendors in one process conflict")
 	case len(vendors) == 1 && len(pending) > 0:
 		verdict = VerdictConflict
 		for v, name := range pending {
