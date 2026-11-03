@@ -17,7 +17,7 @@ What gets installed in the `collectorctrl-operator` namespace:
 | `webhook.yaml` | Optional: Service, `MutatingWebhookConfiguration` and extra RBAC for Java auto-instrumentation. Apply it and set `INSTRUMENTATION=true` (`INSTRUMENTATION=true ./deploy/deploy.sh`) |
 | `example-instrumentation.yaml` | A `default` auto-instrumentation profile to edit and apply |
 
-Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0` (set in `deployment.yaml`).
+Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.9.0` (set in `deployment.yaml`).
 
 ## Prerequisites
 

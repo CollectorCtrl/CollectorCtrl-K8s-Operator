@@ -5,15 +5,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-- The readiness report lists every container's `OTEL_*` variables (`otel_env`: name, value, source, resolved,
-  in_pod, redacted) so the configured exporter, sampler, service name, resource attributes and propagators are
-  readable in one place. Values whose name suggests a credential (`OTEL_EXPORTER_OTLP_HEADERS`, ...) are
-  redacted; Secret-sourced values are never read.
-
-### Fixed
-- Label-discovered collectors now carry the operator's `CLUSTER_NAME` as `k8s.cluster.name` (previously the
-  cluster ID), so CollectorCtrl shows the cluster name on fleet rows and the honeycomb.
+## [0.9.0] - 2026-11-03
 
 ### Added
 - **Java auto-instrumentation** (off by default, `instrumentation.enabled=true`). A pod-mutating admission webhook
@@ -51,6 +43,10 @@ All notable changes to this project are documented here. The format follows
   injection, canary, foreign-agent skip, status roll-up, and a canary revert with a broken agent image.
 - The operator logs OpAMP connection state changes (`OpAMP connected`, `OpAMP connection failed; retrying`), once
   per transition, so an unreachable server or a rejected certificate is visible in the logs.
+- The readiness report lists every container's `OTEL_*` variables (`otel_env`: name, value, source, resolved,
+  in_pod, redacted) so the configured exporter, sampler, service name, resource attributes and propagators are
+  readable in one place. Values whose name suggests a credential (`OTEL_EXPORTER_OTLP_HEADERS`, ...) are
+  redacted; Secret-sourced values are never read.
 
 ### Fixed
 - The webhook is idempotent: when the API server re-invokes it on a pod it already changed
@@ -62,17 +58,22 @@ All notable changes to this project are documented here. The format follows
   in that window is replaced too. Previously the revert could take several cycles and the record could be lost
   when the status update failed. A failing agent init container now counts as a failing canary. Revert records are
   tied to the workload revision (its ReplicaSet, StatefulSet or DaemonSet) with a 15-minute grace period, instead of
-  to pods, which briefly disappear between the deletion and the replacement.
+  to pods, which briefly disappear between the deletion and the replacement. A reverted canary that is still
+  visible in the cache after its deletion is no longer reverted a second time.
+- Label-discovered collectors now carry the operator's `CLUSTER_NAME` as `k8s.cluster.name` (previously the
+  cluster ID), so CollectorCtrl shows the cluster name on fleet rows and the honeycomb.
 
 ### Changed
 - RBAC, only with `instrumentation.enabled=true`: `get`/`list`/`watch` on `instrumentations`, `update`/`patch` on
   their status, `get` on namespaces, `delete` on pods (auto revert), `list` on all and `get`/`update`/`patch` on
   the operator's own `mutatingwebhookconfigurations`, and `get` on the Secrets listed in
   `instrumentation.registryCredentialSecrets`. Observation stays read-only.
+- The raw-manifest bundle attached to the GitHub Release includes `crd-instrumentation.yaml`.
 
 ### Requires
-- CollectorCtrl server that reads `instrumentation` in the readiness report to show rollout state. Older servers
-  ignore the field.
+- CollectorCtrl server 0.7.1-beta or later to show the rollout state and the OpenTelemetry settings; it also
+  accepts the operator's own injector vendor (`collectorctrl`). Servers before 0.7.1-beta reject the 0.9 readiness
+  report entirely, so upgrade the server first.
 
 ## [0.8.0] - 2026-10-28
 

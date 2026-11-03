@@ -14,7 +14,7 @@
 #   ENROLL_TOKEN      optional  cce_... token; prompted for if not set
 #   INSTRUMENTATION   optional  "true" also installs the Java auto-instrumentation
 #                               webhook (deploy/webhook.yaml) and turns it on
-# Image: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0 (edit deploy/deployment.yaml to change)
+# Image: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.9.0 (edit deploy/deployment.yaml to change)
 
 set -euo pipefail
 

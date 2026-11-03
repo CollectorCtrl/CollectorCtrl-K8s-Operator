@@ -5,7 +5,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/badge)](https://scorecard.dev/viewer/?uri=github.com/CollectorCtrl/CollectorCtrl-K8s-Operator)
 [![Release](https://img.shields.io/github/v/release/CollectorCtrl/CollectorCtrl-K8s-Operator?include_prereleases&sort=semver)](https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Helm chart](https://img.shields.io/badge/helm%20chart-0.4.0-0f1689)
+![Helm chart](https://img.shields.io/badge/helm%20chart-0.5.0-0f1689)
 ![Kubernetes](https://img.shields.io/badge/tested%20on-kubernetes%201.33%20%7C%201.37-326ce5)
 
 **See every OpenTelemetry Collector in your clusters, whatever vendor chart deployed it, without handing over control.**
@@ -260,7 +260,7 @@ kubectl -n collectorctrl-operator create secret generic collectorctrl-auth \
 
 # 2. Install the operator (signed OCI chart; see docs/verifying.md)
 helm upgrade --install collectorctrl-operator oci://ghcr.io/collectorctrl/charts/collectorctrl-operator \
-  --version 0.4.0 --namespace collectorctrl-operator \
+  --version 0.5.0 --namespace collectorctrl-operator \
   --set opamp.server=wss://collectorctrl.example.com:4320/v1/opamp \
   --set opamp.enrollmentSecret=collectorctrl-auth \
   --set clusterName=prod-eu

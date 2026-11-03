@@ -164,14 +164,29 @@ func TestRevertIsWrittenBeforePodDeletionAndStragglersAreReplaced(t *testing.T) 
 	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
 		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}, Canary: v1.CanarySpec{MaxRestarts: &two}}}
 	failing := instrumentedPod("flaky-abc12-a", "canary", 2)
+	failing.CreationTimestamp = metav1.NewTime(time.Date(2026, 11, 3, 11, 0, 0, 0, time.UTC))
 	r, c := profileFixture(t, profile, failing)
 	out := reconcileProfile(t, r, c)
 	if out.Status.Workloads[0].State != v1.WorkloadStateReverted {
 		t.Fatalf("%+v", out.Status)
 	}
+	// The deleted canary can be seen once more before the deletion reaches the
+	// cache: it was created before the revert, so it is not reverted again.
+	ghost := instrumentedPod("flaky-abc12-a", "canary", 2)
+	ghost.CreationTimestamp = failing.CreationTimestamp
+	if err := c.Create(context.Background(), ghost); err != nil {
+		t.Fatal(err)
+	}
+	if _, reverts := r.rollUp(out, []corev1.Pod{*ghost}); len(reverts) != 0 {
+		t.Fatalf("reverted canary flagged again: %+v", reverts)
+	}
+	if err := c.Delete(context.Background(), ghost); err != nil {
+		t.Fatal(err)
+	}
 	// A replacement that still got the agent (webhook raced the revert) is deleted
 	// on the next reconcile even though it has not failed yet.
 	straggler := instrumentedPod("flaky-abc12-b", "canary", 0)
+	straggler.CreationTimestamp = metav1.NewTime(time.Date(2026, 11, 3, 12, 0, 1, 0, time.UTC))
 	if err := c.Create(context.Background(), straggler); err != nil {
 		t.Fatal(err)
 	}

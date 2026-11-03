@@ -15,7 +15,7 @@ recorded in the public Rekor transparency log. There is no long-lived signing ke
 ## Image signature
 
 ```sh
-VERSION=0.8.0
+VERSION=0.9.0
 cosign verify ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:$VERSION \
   --certificate-identity "https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/.github/workflows/build-operator.yml@refs/tags/v$VERSION" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
@@ -38,7 +38,7 @@ docker buildx imagetools inspect ghcr.io/collectorctrl/collectorctrl-k8s-operato
 ## Helm chart signature
 
 ```sh
-CHART_VERSION=0.4.0
+CHART_VERSION=0.5.0
 cosign verify ghcr.io/collectorctrl/charts/collectorctrl-operator:$CHART_VERSION \
   --certificate-identity "https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator/.github/workflows/release.yml@refs/tags/v$VERSION" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com

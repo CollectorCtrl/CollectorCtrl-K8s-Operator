@@ -22,7 +22,7 @@ kubectl -n collectorctrl-operator create secret generic collectorctrl-auth \
   --from-literal=enrollment-token=cce_YOUR_TOKEN
 
 helm upgrade --install collectorctrl-operator oci://ghcr.io/collectorctrl/charts/collectorctrl-operator \
-  --version 0.4.0 --namespace collectorctrl-operator \
+  --version 0.5.0 --namespace collectorctrl-operator \
   --set opamp.server=wss://collectorctrl.example.com:4320/v1/opamp \
   --set opamp.enrollmentSecret=collectorctrl-auth \
   --set clusterName=prod-eu
@@ -51,7 +51,7 @@ it.
 
 ### Image tags
 
-The chart uses the image tag that matches its `appVersion` (for example `0.8.0`). Release tags are immutable.
+The chart uses the image tag that matches its `appVersion` (for example `0.9.0`). Release tags are immutable.
 `main` and `latest` follow the main branch and are for testing only:
 
 ```bash

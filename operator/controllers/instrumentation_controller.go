@@ -140,8 +140,11 @@ func (r *InstrumentationReconciler) rollUp(profile *v1.Instrumentation, pods []c
 		}
 		if g.State == v1.WorkloadStateReverted {
 			// Admitted with the agent in the moment between the revert and the
-			// webhook seeing it: replace it like the canary itself.
-			if p.Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeCanary {
+			// webhook seeing it: replace it like the canary itself. Only pods
+			// created after the revert qualify; the reverted canary itself can
+			// still show up once more before its deletion reaches the cache.
+			if p.Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeCanary &&
+				g.LastTransition != nil && p.CreationTimestamp.After(g.LastTransition.Time) {
 				reverts = append(reverts, revert{pod: *p, workload: w, reason: g.Reason + " (replacement pod admitted before the revert was visible)"})
 			}
 			continue

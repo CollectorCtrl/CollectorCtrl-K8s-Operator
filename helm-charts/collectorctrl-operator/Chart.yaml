@@ -2,8 +2,8 @@ apiVersion: v2
 name: collectorctrl-operator
 description: Observes OpenTelemetry Collector workloads (any vendor chart) and application instrumentation readiness, reports them to CollectorCtrl over OpAMP, and optionally adds the OpenTelemetry Java agent to opted-in workloads
 type: application
-version: 0.4.0
-appVersion: "0.8.0"
+version: 0.5.0
+appVersion: "0.9.0"
 home: https://collectorctrl.com
 sources:
   - https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator
@@ -37,3 +37,5 @@ annotations:
       description: instrumentation.defaultProfile values create a default profile; instrumentation.registryCredentialSecrets grants registry credential reads
     - kind: changed
       description: With instrumentation enabled, RBAC adds instrumentations, namespace get, pod delete and the operator's own webhook configuration
+    - kind: added
+      description: Readiness report lists every container's OTEL_* settings; collector connections carry clusterName
