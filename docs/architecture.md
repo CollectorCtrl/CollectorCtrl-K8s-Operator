@@ -166,7 +166,8 @@ A workload is listed when a container image's **repository path** (never its tag
 | `injectors[]` | APM injector webhooks: `name` (MutatingWebhookConfiguration), `vendor` (including `collectorctrl` for the operator's own webhook, which counts as the OpenTelemetry family), `mode` (`request` or `selector`), `webhooks[]`, `failure_policy` |
 | `workloads[]` | `namespace`, `kind`, `name`, `uid`, `stack`, `stack_source`, `pod` (running pod inspected, if any), `verdict`, `containers[]`, `instrumentation` (0.9, optional) |
 | `instrumentation` | CollectorCtrl's own Java auto-instrumentation for the workload: `requested` (`all`, `canary`), `profile`, `state` (`pending`, `canary`, `rolled-out`, `reverted`, `skipped`), `pods` carrying the agent, `reason` (skip or revert) |
-| `containers[]` | `name`, `image`, `language`, `language_source`, `agents[]`, `requests[]`, `selected_by[]`, `launcher[]`, `vendor_env[]`, `verdict`, `findings[]`, `reasons[]` (finding messages, for older readers) |
+| `containers[]` | `name`, `image`, `language`, `language_source`, `agents[]`, `requests[]`, `selected_by[]`, `launcher[]`, `vendor_env[]`, `otel_env[]` (0.9), `verdict`, `findings[]`, `reasons[]` (finding messages, for older readers) |
+| `otel_env[]` | Every `OTEL_*` variable of the container: `name`, `value` (absent when unresolved or redacted), `source` (as launcher sources), `resolved`, `in_pod` (added by a webhook), `redacted` (name contains HEADERS, TOKEN, KEY, SECRET, PASSWORD, CREDENTIAL or AUTH). Values are capped at 1,024 characters |
 | `findings[]` | `code` (stable, see below), `severity` (`blocker`, `warning`, `info`), `subject`, `message` |
 | `agents[]` | `vendor`, `language`, `mechanism`, `evidence`, `injected` (only in the running pod) |
 | `launcher[]` | `name`, `source` (`literal`, `configmap`, `secret`, `field`, `resource`, `envfrom-configmap`, `envfrom-secret`), `resolved`, `entries[]` (agent-loading parts only), `other_flags` (count), `in_pod` |

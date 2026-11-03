@@ -45,10 +45,13 @@ type CollectorMonitorReconciler struct {
 	CredentialDirectory string
 	DefaultServer       string
 	ClusterID           string
-	TLSConfig           *tls.Config
-	lifetime            context.Context
-	mu                  sync.Mutex
-	connections         map[string]*connection
+	// ClusterName is the display name sent as k8s.cluster.name on every
+	// collector connection unless the monitor's own label sets one.
+	ClusterName string
+	TLSConfig   *tls.Config
+	lifetime    context.Context
+	mu          sync.Mutex
+	connections map[string]*connection
 }
 
 type connection struct {
@@ -505,6 +508,9 @@ func (r *CollectorMonitorReconciler) ensureConnection(ctx context.Context, m *v1
 		secretVersion = secret.ResourceVersion
 	}
 	clusterName := m.Labels["k8s.cluster.name"]
+	if clusterName == "" {
+		clusterName = r.ClusterName
+	}
 	if clusterName == "" {
 		clusterName = r.ClusterID
 	}

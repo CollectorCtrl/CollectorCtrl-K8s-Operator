@@ -91,6 +91,16 @@ type LauncherVar struct {
 	InPod      bool     `json:"in_pod,omitempty"`      // set in the running pod only (added by a webhook)
 }
 
+// OTelVar is one OTEL_* environment variable of a container.
+type OTelVar struct {
+	Name     string `json:"name"`
+	Value    string `json:"value,omitempty"` // empty when unresolved or redacted
+	Source   string `json:"source"`          // literal, configmap, secret, field, resource, envfrom-configmap
+	Resolved bool   `json:"resolved"`
+	InPod    bool   `json:"in_pod,omitempty"`   // present in the running pod only (added by a webhook)
+	Redacted bool   `json:"redacted,omitempty"` // value withheld: the name suggests a credential
+}
+
 // VendorEnv counts vendor configuration variables, e.g. DD_* without a loader.
 type VendorEnv struct {
 	Vendor string `json:"vendor"`
@@ -109,9 +119,14 @@ type Container struct {
 	SelectedBy     []string      `json:"selected_by,omitempty"` // injector names whose webhook selects this pod
 	Launcher       []LauncherVar `json:"launcher,omitempty"`
 	VendorEnv      []VendorEnv   `json:"vendor_env,omitempty"`
-	Verdict        string        `json:"verdict"`
-	Findings       []Finding     `json:"findings"`
-	Reasons        []string      `json:"reasons"`
+	// OTelEnv lists the OTEL_* variables the SDK or agent reads, so what is
+	// configured (exporter, sampler, service name, resource attributes,
+	// propagators) is visible in one place. Values that look like credentials
+	// are redacted; Secret-sourced values are never read.
+	OTelEnv  []OTelVar `json:"otel_env,omitempty"`
+	Verdict  string    `json:"verdict"`
+	Findings []Finding `json:"findings"`
+	Reasons  []string  `json:"reasons"`
 }
 
 // Lookup resolves a ConfigMap key in the workload's namespace. Secrets are
@@ -268,6 +283,19 @@ func analyzeContainer(in Input, c corev1.Container) Container {
 		}
 	}
 	res.VendorEnv = vendorEnv(tmpl)
+	res.OTelEnv = otelEnv(tmpl)
+	if live != nil {
+		have := map[string]bool{}
+		for _, v := range res.OTelEnv {
+			have[v.Name] = true
+		}
+		for _, v := range otelEnv(live) {
+			if !have[v.Name] {
+				v.InPod = true
+				res.OTelEnv = append(res.OTelEnv, v)
+			}
+		}
+	}
 
 	res.Language, res.LanguageSource = detectLanguage(c, tmpl, res.Agents)
 	if lang, ok := languageOverride(in.WorkloadAnnotations, c.Name); ok {
