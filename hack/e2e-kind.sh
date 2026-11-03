@@ -188,6 +188,51 @@ done
 [ "${PODS:-0}" = "2" ] || fail "Instrumentation status reports ${PODS:-0} pods, want 2"
 echo "Webhook ok: merged flags, exporter set, canary limited to one pod, foreign agent left alone, status rolled up"
 
+step "Canary revert: a broken agent image reverts the revision once and stays reverted"
+kubectl apply -f - <<'EOF2'
+apiVersion: collectorctrl.io/v1alpha1
+kind: Instrumentation
+metadata: {name: broken-agent, namespace: shop}
+spec:
+  exporter: {endpoint: http://otel-gateway.observability:4318}
+  java: {image: "busybox:1.36"}
+  canary: {maxRestarts: 2, autoRevert: true}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: flaky, namespace: shop}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: flaky}}
+  template:
+    metadata:
+      labels: {app: flaky, collectorctrl.io/instrument-java: canary}
+      annotations: {collectorctrl.io/instrumentation: broken-agent}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          env: [{name: JAVA_HOME, value: /opt/java}]
+EOF2
+for _ in $(seq 1 60); do
+  ST="$(kubectl -n shop get instrumentation broken-agent -o jsonpath='{.status.workloads[0].state}')"
+  [ "$ST" = "reverted" ] && break
+  sleep 3
+done
+[ "$ST" = "reverted" ] || fail "broken-agent canary was not reverted (state: ${ST:-none})"
+kubectl -n shop rollout status deploy/flaky --timeout=120s || fail "flaky did not recover after the revert"
+FLAKY="$(kubectl -n shop get pods -l app=flaky --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')"
+kubectl -n shop get pod "$FLAKY" -o jsonpath='{.metadata.annotations.collectorctrl\.io/instrumentation-reason}' | grep -q '^reverted:' || fail "replacement pod was not skipped as reverted"
+[ -z "$(kubectl -n shop get pod "$FLAKY" -o jsonpath='{.spec.initContainers}')" ] || fail "replacement pod still has the agent"
+kubectl -n shop delete pod "$FLAKY" --wait=false; sleep 20
+kubectl -n shop rollout status deploy/flaky --timeout=120s || fail "flaky did not recover after pod deletion"
+REVERTS="$(kubectl -n "$NS" logs "deploy/${RELEASE}" | grep -c 'canary reverted' || true)"
+[ "$REVERTS" = "1" ] || fail "expected exactly one revert, saw $REVERTS"
+ST="$(kubectl -n shop get instrumentation broken-agent -o jsonpath='{.status.workloads[0].state}')"
+[ "$ST" = "reverted" ] || fail "revert record lost after pod recreation (state: ${ST:-none})"
+echo "Revert ok: one revert, replacement pods start without the agent, record kept"
+
 step "Reconcile for a while, then read the logs"
 sleep 45
 LOGS="$(kubectl -n "$NS" logs "deploy/${RELEASE}")"

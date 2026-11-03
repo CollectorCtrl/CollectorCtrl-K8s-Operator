@@ -38,7 +38,9 @@ All notable changes to this project are documented here. The format follows
   (`INSTRUMENTATION=true ./deploy/deploy.sh`). Environment variables `INSTRUMENTATION`, `WEBHOOK_SERVICE_NAME`,
   `WEBHOOK_CONFIGURATION_NAME`, `WEBHOOK_CERT_DIR`.
 - Documentation: [docs/auto-instrumentation.md](docs/auto-instrumentation.md); the kind end-to-end test covers
-  injection, canary, foreign-agent skip and status roll-up.
+  injection, canary, foreign-agent skip, status roll-up, and a canary revert with a broken agent image.
+- The operator logs OpAMP connection state changes (`OpAMP connected`, `OpAMP connection failed; retrying`), once
+  per transition, so an unreachable server or a rejected certificate is visible in the logs.
 
 ### Fixed
 - The webhook is idempotent: when the API server re-invokes it on a pod it already changed
