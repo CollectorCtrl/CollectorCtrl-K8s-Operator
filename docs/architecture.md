@@ -325,7 +325,7 @@ checked. *Unknown* containers still get merge warnings for any launcher variable
 | --- | --- |
 | Ambiguous workload, container, ConfigMap or key | Monitor status `Error` with the reason (label path: log line); no connection |
 | Config unparsable | Still observed and reported; role `unknown`, `config_error` set |
-| Server unreachable | Snapshots are dropped while disconnected; the next interval sends a fresh one. Status `Disconnected` |
+| Server unreachable | Snapshots are dropped while disconnected; the next interval sends a fresh one. Status `Disconnected`; one log line per state change (`OpAMP connection failed; retrying with backoff`, `OpAMP connected`) |
 | Credential volume lost | Affected identities must be reset in CollectorCtrl before they can enroll again (see [installation.md](installation.md#credentials-and-recovery)) |
 | Workload deleted | Connection closed; the entry stays offline in CollectorCtrl until removed |
 | Operator restart | Identities and credentials reused; observation resumes within one interval |

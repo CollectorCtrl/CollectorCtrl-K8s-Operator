@@ -103,20 +103,22 @@ the first pod restarts, then *instrumented*, with the rollout state (`canary`, `
 
 For a new pod with the label, in this order:
 
-1. **Profile.** None found: skip (`no_profile`).
-2. **Revert record.** The profile's status says this workload revision was reverted: skip (`reverted`).
-3. **Canary.** Mode `canary` and another instrumented pod of this revision exists: skip (`canary_present`).
-4. **Other agents.** The same analysis as the readiness report runs on the pod. Any APM agent (javaagent flag,
+1. **Already done.** The pod carries the operator's label or agent init container because the API server re-invoked
+   the webhook after another mutation: no change (`already_injected`).
+2. **Profile.** None found: skip (`no_profile`).
+3. **Revert record.** The profile's status says this workload revision was reverted: skip (`reverted`).
+4. **Canary.** Mode `canary` and another instrumented pod of this revision exists: skip (`canary_present`).
+5. **Other agents.** The same analysis as the readiness report runs on the pod. Any APM agent (javaagent flag,
    init container, preload library, profiler, ...) of any vendor: skip (`agent_present`). Any other injector webhook
    whose selectors match the pod: skip (`injector_present`).
-5. **Container.** The annotated container, else the single Java container, else the single application container
+6. **Container.** The annotated container, else the single Java container, else the single application container
    (noted as `language_assumed`). Two candidates: skip (`container_ambiguous`). A Node.js, Python, .NET or Go
    container only: skip (`not_java`).
-6. **Launcher.** The `JAVA_TOOL_OPTIONS` the process would have had is found: a literal value, a ConfigMap key (read
+7. **Launcher.** The `JAVA_TOOL_OPTIONS` the process would have had is found: a literal value, a ConfigMap key (read
    and inlined), an `envFrom` ConfigMap, else the image configuration when the registry read is allowed. A value
    from a Secret, a field or resource reference, or an `envFrom` Secret without `instrument-force`: skip
    (`launcher_unreadable`). The operator never reads Secrets.
-7. **Mutation.** An `emptyDir` volume, an init container that copies `/javaagent.jar` from the agent image into
+8. **Mutation.** An `emptyDir` volume, an init container that copies `/javaagent.jar` from the agent image into
    it, a read-only mount in the application container, `JAVA_TOOL_OPTIONS=<existing> -javaagent:/collectorctrl/java/opentelemetry-javaagent.jar [extraOptions]`,
    and the OTel SDK variables the container does not already set: `OTEL_EXPORTER_OTLP_ENDPOINT`,
    `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_SERVICE_NAME` (the workload name), `OTEL_RESOURCE_ATTRIBUTES`
@@ -162,8 +164,9 @@ instrumented pods. When a canary pod's containers restart `canary.maxRestarts` t
 - the profile's `status.workloads[]` entry becomes `state: reverted` with the reason, and the webhook skips every
   further pod of that revision (`reverted`);
 - with `canary.autoRevert: true` (default) the failing pod is deleted; its replacement starts without the agent;
-- a new revision (any change to the pod template) is tried again, and the record is dropped once no pod of the
-  reverted revision asks for the agent any more.
+- a new revision (any change to the pod template) is tried again. The record is kept for at least 15 minutes and
+  for as long as the reverted revision still exists and asks for the agent (its ReplicaSet with that pod template
+  hash, or the StatefulSet or DaemonSet); it is dropped once the revision is gone.
 
 Two pods created in the same instant can both become canaries: the webhook reads the pod cache, which can lag a
 moment behind. Set `"true"` when the canary looks good; set the label to `"false"` (or remove it) and restart the

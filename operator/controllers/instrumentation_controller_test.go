@@ -103,10 +103,12 @@ func TestFailingCanaryIsRevertedAndStaysReverted(t *testing.T) {
 	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted || out.Status.Workloads[0].Pods != 0 || out.Status.PodsInstrumented != 0 {
 		t.Fatalf("status after deletion %+v", out.Status)
 	}
-	// Once the revision is gone (new rollout), the record is dropped.
+	// Once the revision is gone (no ReplicaSet of that hash, no pod) and the
+	// grace period has passed, the record is dropped.
 	if err := c.Delete(context.Background(), sibling); err != nil {
 		t.Fatal(err)
 	}
+	r.Now = func() time.Time { return time.Date(2026, 11, 3, 13, 0, 0, 0, time.UTC) }
 	out = reconcileProfile(t, r, c)
 	if len(out.Status.Workloads) != 0 {
 		t.Fatalf("stale revert kept: %+v", out.Status.Workloads)
@@ -140,5 +142,99 @@ func TestHealthyCanaryIsNotReverted(t *testing.T) {
 	}
 	if instrument.OwnerOf(instrumentedPod("x", "canary", 0)).Name != "orders" {
 		t.Fatal("owner derivation")
+	}
+}
+
+func TestFailingAgentInitContainerRevertsCanary(t *testing.T) {
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}}}
+	canary := instrumentedPod("orders-abc12-c", "canary", 0)
+	canary.Status.Phase = corev1.PodPending
+	canary.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: instrument.InitContainerName, RestartCount: 3,
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}}}
+	r, c := profileFixture(t, profile, canary)
+	out := reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("init container failure not treated as a failing canary: %+v", out.Status)
+	}
+}
+
+func TestRevertIsWrittenBeforePodDeletionAndStragglersAreReplaced(t *testing.T) {
+	two := int32(2)
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}, Canary: v1.CanarySpec{MaxRestarts: &two}}}
+	failing := instrumentedPod("flaky-abc12-a", "canary", 2)
+	r, c := profileFixture(t, profile, failing)
+	out := reconcileProfile(t, r, c)
+	if out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("%+v", out.Status)
+	}
+	// A replacement that still got the agent (webhook raced the revert) is deleted
+	// on the next reconcile even though it has not failed yet.
+	straggler := instrumentedPod("flaky-abc12-b", "canary", 0)
+	if err := c.Create(context.Background(), straggler); err != nil {
+		t.Fatal(err)
+	}
+	out = reconcileProfile(t, r, c)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(straggler), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("straggler should be deleted, got %v", err)
+	}
+	if out.Status.Workloads[0].State != v1.WorkloadStateReverted || !strings.Contains(out.Status.Workloads[0].Reason, "restarted 2 times") {
+		t.Fatalf("revert record changed: %+v", out.Status.Workloads[0])
+	}
+	// A pod of the revision without the agent (the webhook skipped it) is left alone and keeps the record alive.
+	clean := instrumentedPod("flaky-abc12-c", "canary", 0)
+	delete(clean.Labels, v1.LabelInstrumented)
+	clean.Annotations = map[string]string{v1.AnnotationInstrumentationStatus: "skipped"}
+	if err := c.Create(context.Background(), clean); err != nil {
+		t.Fatal(err)
+	}
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("record lost: %+v", out.Status)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(clean), &corev1.Pod{}); err != nil {
+		t.Fatalf("clean pod must not be deleted: %v", err)
+	}
+}
+
+// The sequence seen on a real cluster: the failing canary is deleted, the
+// replacement is not in the cache yet, and a reconcile runs in between. The
+// record must survive because the ReplicaSet of that revision still asks.
+func TestRevertSurvivesTheGapBetweenPodDeletionAndReplacement(t *testing.T) {
+	two := int32(2)
+	ctrl := true
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}, Canary: v1.CanarySpec{MaxRestarts: &two}}}
+	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "orders-abc12", Namespace: "shop", Labels: map[string]string{"pod-template-hash": "abc12"},
+		OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "orders", UID: "d-1", Controller: &ctrl}}}}
+	rs.Spec.Template.Labels = map[string]string{"app": "orders", v1.LabelInstrumentJava: "canary", "pod-template-hash": "abc12"}
+	failing := instrumentedPod("orders-abc12-a", "canary", 2)
+	r, c := profileFixture(t, profile, rs, failing)
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+
+	out := reconcileProfile(t, r, c) // reverts and deletes the pod
+	if out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("%+v", out.Status)
+	}
+	// Gap: no pod at all. Within the grace period the record stays regardless.
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 {
+		t.Fatalf("record dropped in the gap: %+v", out.Status)
+	}
+	// Long after the grace period the ReplicaSet still exists and asks: keep.
+	now = now.Add(time.Hour)
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("record dropped although the ReplicaSet still asks: %+v", out.Status)
+	}
+	// The user rolls out a new revision (old ReplicaSet scaled away and removed): drop.
+	if err := c.Delete(context.Background(), rs); err != nil {
+		t.Fatal(err)
+	}
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 0 {
+		t.Fatalf("stale record kept: %+v", out.Status)
 	}
 }

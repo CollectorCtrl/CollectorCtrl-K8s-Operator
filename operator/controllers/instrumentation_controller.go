@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,14 +62,6 @@ func (r *InstrumentationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	status, reverts := r.rollUp(profile, mine)
-	for _, rv := range reverts {
-		log.Info("canary reverted", "workload", rv.workload.Kind+"/"+rv.workload.Name, "namespace", rv.pod.Namespace, "pod", rv.pod.Name, "reason", rv.reason, "deletePod", profile.AutoRevertEnabled())
-		if profile.AutoRevertEnabled() {
-			if err := r.Delete(ctx, &rv.pod, client.Preconditions{UID: &rv.pod.UID}); err != nil && !apierrors.IsNotFound(err) {
-				log.Error(err, "failed to delete reverted canary pod", "pod", rv.pod.Namespace+"/"+rv.pod.Name)
-			}
-		}
-	}
 	status.Conditions = []metav1.Condition{{
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Active", ObservedGeneration: profile.Generation,
 		Message:            fmt.Sprintf("%d pods instrumented across %d workload revisions", status.PodsInstrumented, len(status.Workloads)),
@@ -78,10 +71,24 @@ func (r *InstrumentationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		status.Conditions[0].LastTransitionTime = profile.Status.Conditions[0].LastTransitionTime
 	}
 	status.ObservedGeneration = profile.Generation
+
+	// Status first: the webhook reads the revert from status, so it must be
+	// persisted before the failing pod is deleted and a replacement admitted.
+	// A merge patch cannot hit a resourceVersion conflict from a stale cache.
 	if !statusEqual(profile.Status, status) {
+		original := profile.DeepCopy()
 		profile.Status = status
-		if err := r.Status().Update(ctx, profile); err != nil {
+		if err := r.Status().Patch(ctx, profile, client.MergeFrom(original)); err != nil {
+			log.Error(err, "instrumentation status not written; reverts are not applied until it is")
 			return ctrl.Result{}, err
+		}
+	}
+	for _, rv := range reverts {
+		log.Info("canary reverted", "workload", rv.workload.Kind+"/"+rv.workload.Name, "namespace", rv.pod.Namespace, "pod", rv.pod.Name, "reason", rv.reason, "deletePod", profile.AutoRevertEnabled())
+		if profile.AutoRevertEnabled() {
+			if err := r.Delete(ctx, &rv.pod, client.Preconditions{UID: &rv.pod.UID}); err != nil && !apierrors.IsNotFound(err) {
+				log.Error(err, "failed to delete reverted canary pod", "pod", rv.pod.Namespace+"/"+rv.pod.Name)
+			}
 		}
 	}
 	return ctrl.Result{RequeueAfter: instrumentationRequeue}, nil
@@ -132,6 +139,11 @@ func (r *InstrumentationReconciler) rollUp(profile *v1.Instrumentation, pods []c
 			}
 		}
 		if g.State == v1.WorkloadStateReverted {
+			// Admitted with the agent in the moment between the revert and the
+			// webhook seeing it: replace it like the canary itself.
+			if p.Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeCanary {
+				reverts = append(reverts, revert{pod: *p, workload: w, reason: g.Reason + " (replacement pod admitted before the revert was visible)"})
+			}
 			continue
 		}
 		if p.Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeCanary {
@@ -173,19 +185,55 @@ func (r *InstrumentationReconciler) rollUp(profile *v1.Instrumentation, pods []c
 	return out, reverts
 }
 
-// revisionStillRequests reports whether a pod of the reverted revision still
-// carries the opt-in label, i.e. the revert must stay in force.
+// revertGrace keeps a fresh revert record even when nothing can be seen
+// asking for the agent: the failing pod is terminating and its replacement is
+// not in the cache yet.
+const revertGrace = 15 * time.Minute
+
+// revisionStillRequests reports whether the reverted workload revision still
+// exists and asks for the agent, in which case the record must stay or the
+// next pod would be instrumented again. It decides from the owning object
+// (the ReplicaSet with that pod-template-hash, or the StatefulSet/DaemonSet),
+// not from pods, which come and go.
 func (r *InstrumentationReconciler) revisionStillRequests(w v1.InstrumentedWorkload) bool {
+	if w.LastTransition != nil && r.now().Sub(w.LastTransition.Time) < revertGrace {
+		return true
+	}
+	ctx := context.Background()
+	switch w.Kind {
+	case "Deployment":
+		var sets appsv1.ReplicaSetList
+		if err := r.List(ctx, &sets, client.InNamespace(w.Namespace), client.MatchingLabels{"pod-template-hash": w.Revision}); err != nil {
+			return true // be conservative: keep the revert
+		}
+		for i := range sets.Items {
+			rs := &sets.Items[i]
+			owner := metav1.GetControllerOf(rs)
+			if owner != nil && owner.Kind == "Deployment" && owner.Name == w.Name && instrument.ModeOf(rs.Spec.Template.Labels) != "" {
+				return true
+			}
+		}
+		return false
+	case "StatefulSet":
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: w.Namespace, Name: w.Name}, sts); err != nil {
+			return !apierrors.IsNotFound(err)
+		}
+		return instrument.ModeOf(sts.Spec.Template.Labels) != "" && (w.Revision == "" || sts.Status.UpdateRevision == w.Revision || sts.Status.CurrentRevision == w.Revision)
+	case "DaemonSet":
+		ds := &appsv1.DaemonSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: w.Namespace, Name: w.Name}, ds); err != nil {
+			return !apierrors.IsNotFound(err)
+		}
+		return instrument.ModeOf(ds.Spec.Template.Labels) != ""
+	}
+	// Other owners (ReplicaSet, Job, bare Pod): keep while a pod of it exists.
 	var pods corev1.PodList
-	if err := r.List(context.Background(), &pods, client.InNamespace(w.Namespace), client.HasLabels{v1.LabelInstrumentJava}); err != nil {
-		return true // be conservative: keep the revert
+	if err := r.List(ctx, &pods, client.InNamespace(w.Namespace), client.HasLabels{v1.LabelInstrumentJava}); err != nil {
+		return true
 	}
 	for i := range pods.Items {
-		p := &pods.Items[i]
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		o := instrument.OwnerOf(p)
+		o := instrument.OwnerOf(&pods.Items[i])
 		if o.Kind == w.Kind && o.Name == w.Name && (w.Revision == "" || o.Revision == w.Revision) {
 			return true
 		}
@@ -198,7 +246,9 @@ func (r *InstrumentationReconciler) revisionStillRequests(w v1.InstrumentedWorkl
 func canaryFailing(p *corev1.Pod, maxRestarts int32) (string, bool) {
 	var restarts int32
 	crash := ""
-	for _, cs := range p.Status.ContainerStatuses {
+	// The agent init container counts too: a bad agent image fails there.
+	statuses := append(append([]corev1.ContainerStatus(nil), p.Status.InitContainerStatuses...), p.Status.ContainerStatuses...)
+	for _, cs := range statuses {
 		restarts += cs.RestartCount
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
 			crash = cs.Name
@@ -276,6 +326,9 @@ func (r *InstrumentationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func restarts(p *corev1.Pod) int32 {
 	var n int32
+	for _, cs := range p.Status.InitContainerStatuses {
+		n += cs.RestartCount
+	}
 	for _, cs := range p.Status.ContainerStatuses {
 		n += cs.RestartCount
 	}

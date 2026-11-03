@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sync"
 	"time"
 
@@ -102,6 +103,10 @@ type Client struct {
 	ackPending      bool
 	sendMu          sync.Mutex
 	stopOnce        sync.Once
+	// last logged connection state, to log transitions only
+	loggedConnected bool
+	loggedError     string
+	loggedOnce      bool
 }
 
 func NewClient(cfg ClientConfig) *Client { return &Client{config: cfg} }
@@ -160,6 +165,7 @@ func (c *Client) Start(ctx context.Context) error {
 		Capabilities: protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth | protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus,
 		Callbacks: opampcltypes.Callbacks{
 			OnConnect: func(context.Context) {
+				c.logState(true, nil)
 				c.setConnected(true)
 				c.mu.Lock()
 				c.ackPending = c.credential != ""
@@ -167,12 +173,20 @@ func (c *Client) Start(ctx context.Context) error {
 				_ = c.sendCredentialAck()
 			},
 			OnConnectFailed: func(_ context.Context, err error) {
+				c.logState(false, err)
 				c.mu.Lock()
 				c.connected = false
 				c.connectionError = err
 				c.mu.Unlock()
 			},
-			OnError: func(context.Context, *protobufs.ServerErrorResponse) { c.setConnected(false) },
+			OnError: func(_ context.Context, e *protobufs.ServerErrorResponse) {
+				var err error
+				if e != nil {
+					err = fmt.Errorf("server error: %s", e.ErrorMessage)
+				}
+				c.logState(false, err)
+				c.setConnected(false)
+			},
 			OnCommand: func(context.Context, *protobufs.ServerToAgentCommand) error {
 				return fmt.Errorf("observation mode does not accept commands")
 			},
@@ -200,6 +214,31 @@ func (c *Client) Start(ctx context.Context) error {
 		},
 	})
 }
+
+// logState writes one line per connection state change: connected, or the
+// first failure and every change of failure reason. opamp-go retries with
+// backoff and would otherwise fail silently; the status conditions are the
+// only other signal and label-discovered collectors have none.
+func (c *Client) logState(connected bool, err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	c.mu.Lock()
+	changed := connected != c.loggedConnected || (!connected && msg != c.loggedError) || !c.loggedOnce
+	c.loggedConnected, c.loggedError, c.loggedOnce = connected, msg, true
+	c.mu.Unlock()
+	if !changed {
+		return
+	}
+	log := logf.Log.WithName("opamp").WithValues("endpoint", c.config.Endpoint, "agent", c.config.AgentID)
+	if connected {
+		log.Info("OpAMP connected")
+		return
+	}
+	log.Info("OpAMP connection failed; retrying with backoff", "error", msg)
+}
+
 func (c *Client) setConnected(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

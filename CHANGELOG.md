@@ -38,7 +38,21 @@ All notable changes to this project are documented here. The format follows
   (`INSTRUMENTATION=true ./deploy/deploy.sh`). Environment variables `INSTRUMENTATION`, `WEBHOOK_SERVICE_NAME`,
   `WEBHOOK_CONFIGURATION_NAME`, `WEBHOOK_CERT_DIR`.
 - Documentation: [docs/auto-instrumentation.md](docs/auto-instrumentation.md); the kind end-to-end test covers
-  injection, canary, foreign-agent skip and status roll-up.
+  injection, canary, foreign-agent skip, status roll-up, and a canary revert with a broken agent image.
+- The operator logs OpAMP connection state changes (`OpAMP connected`, `OpAMP connection failed; retrying`), once
+  per transition, so an unreachable server or a rejected certificate is visible in the logs.
+
+### Fixed
+- The webhook is idempotent: when the API server re-invokes it on a pod it already changed
+  (`reinvocationPolicy: IfNeeded`), the pod is left untouched (`already_injected`) instead of its markers being
+  rewritten to `skipped: agent_present`. Found on a kind cluster with Spring Petclinic and Zipkin.
+- The `Instrumentation` CRD no longer declares `format: int32/int64`, which Kubernetes 1.34 warns about.
+- Canary revert is written to the profile's status (merge patch) before the failing pod is deleted, the webhook
+  reads profiles from the API server rather than the cache, and a replacement pod that still received the agent
+  in that window is replaced too. Previously the revert could take several cycles and the record could be lost
+  when the status update failed. A failing agent init container now counts as a failing canary. Revert records are
+  tied to the workload revision (its ReplicaSet, StatefulSet or DaemonSet) with a 15-minute grace period, instead of
+  to pods, which briefly disappear between the deletion and the replacement.
 
 ### Changed
 - RBAC, only with `instrumentation.enabled=true`: `get`/`list`/`watch` on `instrumentations`, `update`/`patch` on

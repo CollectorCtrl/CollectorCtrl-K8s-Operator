@@ -57,6 +57,9 @@ const (
 	CodeContainerAmbiguous = "container_ambiguous"
 	CodeNotJava            = "not_java"
 	CodeLauncherUnreadable = "launcher_unreadable"
+	// CodeAlreadyInjected: the pod already carries this operator's agent (the
+	// API server re-invoked the webhook after another mutation). Nothing changes.
+	CodeAlreadyInjected = "already_injected"
 )
 
 // Notes on injected pods.
@@ -167,12 +170,31 @@ type Result struct {
 
 func skip(code, reason string) Result { return Result{Code: code, Reason: reason} }
 
+// AlreadyInjected reports whether this operator's agent is in the pod: the
+// instrumented label or the agent init container.
+func AlreadyInjected(pod *corev1.Pod) bool {
+	if pod.Labels[v1.LabelInstrumented] != "" {
+		return true
+	}
+	for _, ic := range pod.Spec.InitContainers {
+		if ic.Name == InitContainerName {
+			return true
+		}
+	}
+	return false
+}
+
 // Decide runs the rules.
 func Decide(in Input) Result {
 	pod := in.Pod
 	mode := ModeOf(pod.Labels)
 	if mode == "" {
 		return skip(CodeNotRequested, "pod does not carry "+v1.LabelInstrumentJava+"=true or canary")
+	}
+	if AlreadyInjected(pod) {
+		// Webhook re-invocation (reinvocationPolicy IfNeeded) or a pod created
+		// from an already-mutated spec: the agent is there, leave it as it is.
+		return Result{Code: CodeAlreadyInjected, Reason: "pod already carries the OpenTelemetry Java agent added by this operator", Mode: mode}
 	}
 	if in.Profile == nil {
 		return skip(CodeNoProfile, "no Instrumentation profile applies: create one in the namespace, name it with "+v1.AnnotationInstrumentation+", or create a default profile in the operator namespace")
@@ -361,6 +383,9 @@ func Apply(pod *corev1.Pod, in Input, res Result) {
 	}
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
+	}
+	if res.Code == CodeAlreadyInjected {
+		return // never rewrite the markers of a pod this operator already changed
 	}
 	if !res.Injected {
 		pod.Annotations[v1.AnnotationInstrumentationStatus] = "skipped"

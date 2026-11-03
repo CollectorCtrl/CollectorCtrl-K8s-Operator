@@ -97,7 +97,6 @@ spec:
                   properties:
                     maxRestarts:
                       type: integer
-                      format: int32
                       minimum: 1
                       default: 3
                     autoRevert:
@@ -108,10 +107,8 @@ spec:
               properties:
                 podsInstrumented:
                   type: integer
-                  format: int32
                 observedGeneration:
                   type: integer
-                  format: int64
                 workloads:
                   type: array
                   items:
@@ -145,7 +142,6 @@ spec:
                           - reverted
                       pods:
                         type: integer
-                        format: int32
                       reason:
                         type: string
                       lastTransition:
@@ -166,7 +162,6 @@ spec:
                           - Unknown
                       observedGeneration:
                         type: integer
-                        format: int64
                       lastTransitionTime:
                         type: string
                         format: date-time
