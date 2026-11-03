@@ -57,7 +57,7 @@ jobs:
           helm lint "$CHART_DIR" --set opamp.enrollmentSecret=collectorctrl-auth
           helm package "$CHART_DIR" --destination dist
           # Raw manifests in apply order, for clusters without Helm.
-          for f in namespace crd rbac credentials-pvc deployment; do
+          for f in namespace crd crd-instrumentation rbac credentials-pvc deployment; do
             cat "deploy/$f.yaml"; echo "---"
           done > "dist/collectorctrl-operator-$VERSION-manifests.yaml"
           (cd dist && sha256sum ./* > SHA256SUMS)

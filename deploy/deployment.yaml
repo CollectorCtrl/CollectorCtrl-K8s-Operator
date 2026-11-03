@@ -10,7 +10,7 @@ metadata:
   labels:
     app.kubernetes.io/name: collectorctrl-operator
     app.kubernetes.io/instance: collectorctrl-operator
-    app.kubernetes.io/version: "0.6.0-beta"
+    app.kubernetes.io/version: "0.9.0"
     app.kubernetes.io/managed-by: kubectl
 spec:
   # Exactly one replica: credential storage supports a single writer.
@@ -43,7 +43,7 @@ spec:
             readOnlyRootFilesystem: true
             runAsUser: 65532
             runAsGroup: 65532
-          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0"
+          image: "ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.9.0"
           imagePullPolicy: IfNotPresent
           args:
             - --metrics-bind-address=:8080

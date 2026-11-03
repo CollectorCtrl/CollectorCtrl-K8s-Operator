@@ -18,7 +18,7 @@ to new pods (nothing running is touched), and designed to fail towards "pod star
 
 ```bash
 helm upgrade --install collectorctrl-operator oci://ghcr.io/collectorctrl/charts/collectorctrl-operator \
-  --namespace collectorctrl-operator --reuse-values \
+  --version 0.5.0 --namespace collectorctrl-operator --reuse-values \
   --set instrumentation.enabled=true \
   --set instrumentation.defaultProfile.create=true \
   --set instrumentation.defaultProfile.exporterEndpoint=http://otel-agent.observability:4318
