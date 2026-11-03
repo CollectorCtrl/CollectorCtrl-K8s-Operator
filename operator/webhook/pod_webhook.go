@@ -103,6 +103,10 @@ func (h *PodInjector) Handle(ctx context.Context, req admission.Request) admissi
 	}
 
 	res := instrument.Decide(in)
+	if res.Code == instrument.CodeAlreadyInjected {
+		log.V(1).Info("webhook re-invoked on an already instrumented pod; no change")
+		return admission.Allowed("already instrumented")
+	}
 	mutated := pod.DeepCopy()
 	instrument.Apply(mutated, in, res)
 	raw, err := json.Marshal(mutated)

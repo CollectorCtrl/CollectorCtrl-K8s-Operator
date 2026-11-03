@@ -40,6 +40,12 @@ All notable changes to this project are documented here. The format follows
 - Documentation: [docs/auto-instrumentation.md](docs/auto-instrumentation.md); the kind end-to-end test covers
   injection, canary, foreign-agent skip and status roll-up.
 
+### Fixed
+- The webhook is idempotent: when the API server re-invokes it on a pod it already changed
+  (`reinvocationPolicy: IfNeeded`), the pod is left untouched (`already_injected`) instead of its markers being
+  rewritten to `skipped: agent_present`. Found on a kind cluster with Spring Petclinic and Zipkin.
+- The `Instrumentation` CRD no longer declares `format: int32/int64`, which Kubernetes 1.34 warns about.
+
 ### Changed
 - RBAC, only with `instrumentation.enabled=true`: `get`/`list`/`watch` on `instrumentations`, `update`/`patch` on
   their status, `get` on namespaces, `delete` on pods (auto revert), `list` on all and `get`/`update`/`patch` on

@@ -264,3 +264,22 @@ func TestGenerateCertificatesAndPublishCABundle(t *testing.T) {
 		t.Fatal("missing configuration should error (and be retried)")
 	}
 }
+
+func TestWebhookReinvocationIsANoOp(t *testing.T) {
+	h := injector(t, defaultProfile())
+	pod := optedInPod("true")
+	first := h.Handle(context.Background(), request(t, pod))
+	if !first.Allowed || len(first.Patches) == 0 {
+		t.Fatalf("first call: %+v", first)
+	}
+	// Build the pod as the API server would hold it after the first mutation.
+	mutated := pod.DeepCopy()
+	mutated.Labels[v1.LabelInstrumented] = "java"
+	mutated.Annotations = map[string]string{v1.AnnotationInstrumentationStatus: "injected", v1.AnnotationInstrumentation: "collectorctrl-operator/default"}
+	mutated.Spec.InitContainers = []corev1.Container{{Name: instrument.InitContainerName}}
+	mutated.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "JAVA_TOOL_OPTIONS", Value: "-javaagent:" + instrument.AgentJar}}
+	second := h.Handle(context.Background(), request(t, mutated))
+	if !second.Allowed || len(second.Patches) != 0 {
+		t.Fatalf("re-invocation must not patch: %+v", second)
+	}
+}

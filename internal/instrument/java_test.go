@@ -244,7 +244,9 @@ func TestCanaryAndRevert(t *testing.T) {
 	if pod.Annotations[v1.AnnotationInstrumentationMode] != "canary" {
 		t.Errorf("mode annotation %v", pod.Annotations)
 	}
-	in.CanaryTaken = true
+	second := javaPod()
+	second.Labels[v1.LabelInstrumentJava] = "canary"
+	in.Pod, in.CanaryTaken = second, true
 	if res := Decide(in); res.Injected || res.Code != CodeCanaryPresent {
 		t.Fatalf("second canary: %+v", res)
 	}
@@ -354,5 +356,30 @@ func TestExtraOptionsAndCustomImage(t *testing.T) {
 	}
 	if pod.Spec.InitContainers[0].Image != "registry.corp/otel/javaagent:2.33.1" || envValue(c, "OTEL_EXPORTER_OTLP_PROTOCOL") != "grpc" {
 		t.Errorf("%+v %+v", pod.Spec.InitContainers[0].Image, c.Env)
+	}
+}
+
+func TestSecondPassLeavesInjectedPodAlone(t *testing.T) {
+	pod := javaPod(corev1.EnvVar{Name: "JAVA_TOOL_OPTIONS", Value: "-Xmx512m"})
+	in := input(pod)
+	first := Decide(in)
+	Apply(pod, in, first)
+	before := pod.DeepCopy()
+
+	// The API server re-invokes the webhook with the mutated pod
+	// (reinvocationPolicy IfNeeded): the agent must not read as a foreign one.
+	second := Decide(in)
+	if second.Injected || second.Code != CodeAlreadyInjected {
+		t.Fatalf("second pass: %+v", second)
+	}
+	Apply(pod, in, second)
+	if pod.Annotations[v1.AnnotationInstrumentationStatus] != "injected" || pod.Labels[v1.LabelInstrumented] != "java" {
+		t.Fatalf("markers rewritten: %v %v", pod.Annotations, pod.Labels)
+	}
+	if len(pod.Spec.InitContainers) != len(before.Spec.InitContainers) || envValue(pod.Spec.Containers[0], "JAVA_TOOL_OPTIONS") != envValue(before.Spec.Containers[0], "JAVA_TOOL_OPTIONS") {
+		t.Fatal("second pass changed the spec")
+	}
+	if !AlreadyInjected(pod) || AlreadyInjected(javaPod()) {
+		t.Fatal("AlreadyInjected")
 	}
 }
