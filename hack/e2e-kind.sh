@@ -98,14 +98,15 @@ step "RBAC is exactly what the docs promise"
 can() { kubectl auth can-i --as="$SA" "$@" >/dev/null 2>&1; }
 for want in "list deployments.apps -A" "watch pods -A" "list configmaps -A" "list services -A" \
   "list namespaces" "list mutatingwebhookconfigurations.admissionregistration.k8s.io" "get namespaces/kube-system" \
-  "list instrumentations.collectorctrl.io -A" "patch instrumentations.collectorctrl.io/status -A" "delete pods -A" \
+  "list instrumentations.collectorctrl.io -A" "patch instrumentations.collectorctrl.io --subresource=status -A" "delete pods -A" \
   "update mutatingwebhookconfigurations.admissionregistration.k8s.io/${RELEASE}-java"; do
   # shellcheck disable=SC2086
   can $want || fail "missing permission: $want"
 done
 for deny in "get secrets -A" "list secrets -A" "update deployments.apps -A" "patch configmaps -A" \
   "create pods -A" "update pods -A" "update mutatingwebhookconfigurations.admissionregistration.k8s.io/some-other-webhook" \
-  "create mutatingwebhookconfigurations.admissionregistration.k8s.io" "update instrumentations.collectorctrl.io -A"; do
+  "create mutatingwebhookconfigurations.admissionregistration.k8s.io" "update instrumentations.collectorctrl.io -A" \
+  "update collectormonitors.collectorctrl.io -A"; do
   # shellcheck disable=SC2086
   if can $deny; then fail "unexpected permission: $deny"; fi
 done
