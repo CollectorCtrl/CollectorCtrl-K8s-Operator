@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The readiness report lists every container's `OTEL_*` variables (`otel_env`: name, value, source, resolved,
+  in_pod, redacted) so the configured exporter, sampler, service name, resource attributes and propagators are
+  readable in one place. Values whose name suggests a credential (`OTEL_EXPORTER_OTLP_HEADERS`, ...) are
+  redacted; Secret-sourced values are never read.
+
+### Fixed
+- Label-discovered collectors now carry the operator's `CLUSTER_NAME` as `k8s.cluster.name` (previously the
+  cluster ID), so CollectorCtrl shows the cluster name on fleet rows and the honeycomb.
+
+### Added
 - **Java auto-instrumentation** (off by default, `instrumentation.enabled=true`). A pod-mutating admission webhook
   (`failurePolicy: Ignore`, 5 s timeout, always *allowed*) adds the OpenTelemetry Java agent to new pods whose
   template carries `collectorctrl.io/instrument-java: "true"` (every pod) or `"canary"` (one pod per workload

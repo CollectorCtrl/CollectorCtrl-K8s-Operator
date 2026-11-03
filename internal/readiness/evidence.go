@@ -644,3 +644,39 @@ func detectLanguage(c corev1.Container, e *evidence, agents []Agent) (string, st
 	}
 	return LangUnknown, ""
 }
+
+// ---------------------------------------------------------------- OTEL_*
+
+// otelValueLimit bounds one reported value; OTEL_RESOURCE_ATTRIBUTES can be long.
+const otelValueLimit = 1024
+
+// otelSecretHints mark variables whose value may carry a credential
+// (OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer ...). Their presence is
+// reported, their value never.
+var otelSecretHints = []string{"HEADERS", "TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"}
+
+// otelEnv lists the OTEL_* variables of a container, sorted by name.
+func otelEnv(e *evidence) []OTelVar {
+	var out []OTelVar
+	for name, v := range e.env {
+		if !strings.HasPrefix(name, "OTEL_") {
+			continue
+		}
+		ov := OTelVar{Name: name, Source: v.source, Resolved: v.resolved}
+		upper := strings.ToUpper(name)
+		for _, hint := range otelSecretHints {
+			if strings.Contains(upper, hint) {
+				ov.Redacted = true
+			}
+		}
+		if v.resolved && !ov.Redacted {
+			ov.Value = v.value
+			if len(ov.Value) > otelValueLimit {
+				ov.Value = ov.Value[:otelValueLimit] + "…"
+			}
+		}
+		out = append(out, ov)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}

@@ -32,6 +32,8 @@ func FuzzAnalyseRedacts(f *testing.F) {
 			{Name: "NODE_OPTIONS", Value: nodeOpts + " --api-key=" + fuzzSecret},
 			{Name: "LD_PRELOAD", Value: preload},
 			{Name: "CORECLR_ENABLE_PROFILING", Value: "1"},
+			{Name: "OTEL_EXPORTER_OTLP_HEADERS", Value: "Authorization=Bearer " + fuzzSecret},
+			{Name: "OTEL_SERVICE_NAME", Value: lang},
 		}}
 		in := Input{
 			Template:            corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{c}}},

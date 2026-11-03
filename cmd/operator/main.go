@@ -128,6 +128,7 @@ func main() {
 		DefaultServer:       os.Getenv("OPAMP_SERVER"),
 		TLSConfig:           tlsConfig,
 		ClusterID:           clusterID,
+		ClusterName:         os.Getenv("CLUSTER_NAME"),
 		DefaultSecretKey:    os.Getenv("OPAMP_SECRET_KEY"),
 		EnrollmentToken:     os.Getenv("OPAMP_ENROLL_TOKEN"),
 		AuthMode:            os.Getenv("OPAMP_AUTH_MODE"),

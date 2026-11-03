@@ -399,3 +399,42 @@ func TestCollectorCtrlInjectorIsOTelFamily(t *testing.T) {
 		t.Fatalf("verdict %s agents %+v findings %+v", res.Verdict, res.Agents, res.Findings)
 	}
 }
+
+func TestOTelEnvIsReportedWithRedaction(t *testing.T) {
+	c := corev1.Container{Name: "app", Image: "acme/orders:1", Command: []string{"java", "-jar", "app.jar"}, Env: []corev1.EnvVar{
+		{Name: "OTEL_SERVICE_NAME", Value: "orders"},
+		{Name: "OTEL_EXPORTER_OTLP_HEADERS", Value: "Authorization=Bearer hunter2"},
+		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{Key: "endpoint"}}},
+		{Name: "OTEL_TRACES_SAMPLER_ARG", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "otel"}, Key: "ratio"}}},
+		{Name: "JAVA_HOME", Value: "/opt/java"},
+	}}
+	in := Input{Template: tmpl(c), Lookup: func(cm, key string) (string, bool) { return "0.25", cm == "otel" && key == "ratio" }}
+	in.Pod = &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Env: append(c.Env, corev1.EnvVar{Name: "OTEL_PROPAGATORS", Value: "tracecontext,baggage"})}}}}
+	res := one(t, in)
+	byName := map[string]OTelVar{}
+	for _, v := range res.OTelEnv {
+		byName[v.Name] = v
+	}
+	if len(res.OTelEnv) != 5 || res.OTelEnv[0].Name != "OTEL_EXPORTER_OTLP_ENDPOINT" {
+		t.Fatalf("otel env: %+v", res.OTelEnv)
+	}
+	if v := byName["OTEL_SERVICE_NAME"]; v.Value != "orders" || v.Source != "literal" || !v.Resolved {
+		t.Errorf("service name: %+v", v)
+	}
+	if v := byName["OTEL_EXPORTER_OTLP_HEADERS"]; !v.Redacted || v.Value != "" {
+		t.Errorf("headers not redacted: %+v", v)
+	}
+	if v := byName["OTEL_EXPORTER_OTLP_ENDPOINT"]; v.Resolved || v.Value != "" || v.Source != "secret" {
+		t.Errorf("secret value leaked or mis-sourced: %+v", v)
+	}
+	if v := byName["OTEL_TRACES_SAMPLER_ARG"]; v.Value != "0.25" || v.Source != "configmap" {
+		t.Errorf("configmap value: %+v", v)
+	}
+	if v := byName["OTEL_PROPAGATORS"]; !v.InPod || v.Value != "tracecontext,baggage" {
+		t.Errorf("in-pod value: %+v", v)
+	}
+	raw, _ := json.Marshal(res)
+	if strings.Contains(string(raw), "hunter2") {
+		t.Fatalf("credential in payload: %s", raw)
+	}
+}
