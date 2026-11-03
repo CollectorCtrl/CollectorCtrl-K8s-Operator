@@ -142,3 +142,17 @@ func TestHealthyCanaryIsNotReverted(t *testing.T) {
 		t.Fatal("owner derivation")
 	}
 }
+
+func TestFailingAgentInitContainerRevertsCanary(t *testing.T) {
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}}}
+	canary := instrumentedPod("orders-abc12-c", "canary", 0)
+	canary.Status.Phase = corev1.PodPending
+	canary.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: instrument.InitContainerName, RestartCount: 3,
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}}}
+	r, c := profileFixture(t, profile, canary)
+	out := reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("init container failure not treated as a failing canary: %+v", out.Status)
+	}
+}

@@ -198,7 +198,9 @@ func (r *InstrumentationReconciler) revisionStillRequests(w v1.InstrumentedWorkl
 func canaryFailing(p *corev1.Pod, maxRestarts int32) (string, bool) {
 	var restarts int32
 	crash := ""
-	for _, cs := range p.Status.ContainerStatuses {
+	// The agent init container counts too: a bad agent image fails there.
+	statuses := append(append([]corev1.ContainerStatus(nil), p.Status.InitContainerStatuses...), p.Status.ContainerStatuses...)
+	for _, cs := range statuses {
 		restarts += cs.RestartCount
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
 			crash = cs.Name
@@ -276,6 +278,9 @@ func (r *InstrumentationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func restarts(p *corev1.Pod) int32 {
 	var n int32
+	for _, cs := range p.Status.InitContainerStatuses {
+		n += cs.RestartCount
+	}
 	for _, cs := range p.Status.ContainerStatuses {
 		n += cs.RestartCount
 	}
