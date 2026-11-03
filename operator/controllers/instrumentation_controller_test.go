@@ -156,3 +156,42 @@ func TestFailingAgentInitContainerRevertsCanary(t *testing.T) {
 		t.Fatalf("init container failure not treated as a failing canary: %+v", out.Status)
 	}
 }
+
+func TestRevertIsWrittenBeforePodDeletionAndStragglersAreReplaced(t *testing.T) {
+	two := int32(2)
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}, Canary: v1.CanarySpec{MaxRestarts: &two}}}
+	failing := instrumentedPod("flaky-abc12-a", "canary", 2)
+	r, c := profileFixture(t, profile, failing)
+	out := reconcileProfile(t, r, c)
+	if out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("%+v", out.Status)
+	}
+	// A replacement that still got the agent (webhook raced the revert) is deleted
+	// on the next reconcile even though it has not failed yet.
+	straggler := instrumentedPod("flaky-abc12-b", "canary", 0)
+	if err := c.Create(context.Background(), straggler); err != nil {
+		t.Fatal(err)
+	}
+	out = reconcileProfile(t, r, c)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(straggler), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("straggler should be deleted, got %v", err)
+	}
+	if out.Status.Workloads[0].State != v1.WorkloadStateReverted || !strings.Contains(out.Status.Workloads[0].Reason, "restarted 2 times") {
+		t.Fatalf("revert record changed: %+v", out.Status.Workloads[0])
+	}
+	// A pod of the revision without the agent (the webhook skipped it) is left alone and keeps the record alive.
+	clean := instrumentedPod("flaky-abc12-c", "canary", 0)
+	delete(clean.Labels, v1.LabelInstrumented)
+	clean.Annotations = map[string]string{v1.AnnotationInstrumentationStatus: "skipped"}
+	if err := c.Create(context.Background(), clean); err != nil {
+		t.Fatal(err)
+	}
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted {
+		t.Fatalf("record lost: %+v", out.Status)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(clean), &corev1.Pod{}); err != nil {
+		t.Fatalf("clean pod must not be deleted: %v", err)
+	}
+}

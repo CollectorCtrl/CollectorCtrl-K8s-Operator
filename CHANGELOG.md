@@ -45,6 +45,10 @@ All notable changes to this project are documented here. The format follows
   (`reinvocationPolicy: IfNeeded`), the pod is left untouched (`already_injected`) instead of its markers being
   rewritten to `skipped: agent_present`. Found on a kind cluster with Spring Petclinic and Zipkin.
 - The `Instrumentation` CRD no longer declares `format: int32/int64`, which Kubernetes 1.34 warns about.
+- Canary revert is written to the profile's status (merge patch) before the failing pod is deleted, the webhook
+  reads profiles from the API server rather than the cache, and a replacement pod that still received the agent
+  in that window is replaced too. Previously the revert could take several cycles and the record could be lost
+  when the status update failed. A failing agent init container now counts as a failing canary.
 
 ### Changed
 - RBAC, only with `instrumentation.enabled=true`: `get`/`list`/`watch` on `instrumentations`, `update`/`patch` on

@@ -123,27 +123,35 @@ func (h *PodInjector) Handle(ctx context.Context, req admission.Request) admissi
 
 // profile picks the Instrumentation for a pod: the annotated one, else the
 // single profile in the namespace, else "default" in the operator namespace.
+//
+// Profiles are read from the API server, not the cache: a revert written a
+// moment ago must be seen by the very next admission, and opted-in pods are
+// admitted rarely enough that one small GET per pod is cheap.
 func (h *PodInjector) profile(ctx context.Context, namespace string, annotations map[string]string) *v1.Instrumentation {
+	reader := client.Reader(h.Client)
+	if h.APIReader != nil {
+		reader = h.APIReader
+	}
 	ns, name := instrument.ProfileRef(annotations)
 	if name != "" {
 		if ns == "" {
 			ns = namespace
 		}
 		p := &v1.Instrumentation{}
-		if err := h.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, p); err != nil {
+		if err := reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, p); err != nil {
 			return nil
 		}
 		return p
 	}
 	var list v1.InstrumentationList
-	if err := h.Client.List(ctx, &list, client.InNamespace(namespace)); err == nil && len(list.Items) == 1 {
+	if err := reader.List(ctx, &list, client.InNamespace(namespace)); err == nil && len(list.Items) == 1 {
 		return &list.Items[0]
 	}
 	if h.OperatorNamespace == "" {
 		return nil
 	}
 	p := &v1.Instrumentation{}
-	if err := h.Client.Get(ctx, client.ObjectKey{Namespace: h.OperatorNamespace, Name: DefaultProfileName}, p); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: h.OperatorNamespace, Name: DefaultProfileName}, p); err != nil {
 		return nil
 	}
 	return p

@@ -61,14 +61,6 @@ func (r *InstrumentationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	status, reverts := r.rollUp(profile, mine)
-	for _, rv := range reverts {
-		log.Info("canary reverted", "workload", rv.workload.Kind+"/"+rv.workload.Name, "namespace", rv.pod.Namespace, "pod", rv.pod.Name, "reason", rv.reason, "deletePod", profile.AutoRevertEnabled())
-		if profile.AutoRevertEnabled() {
-			if err := r.Delete(ctx, &rv.pod, client.Preconditions{UID: &rv.pod.UID}); err != nil && !apierrors.IsNotFound(err) {
-				log.Error(err, "failed to delete reverted canary pod", "pod", rv.pod.Namespace+"/"+rv.pod.Name)
-			}
-		}
-	}
 	status.Conditions = []metav1.Condition{{
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Active", ObservedGeneration: profile.Generation,
 		Message:            fmt.Sprintf("%d pods instrumented across %d workload revisions", status.PodsInstrumented, len(status.Workloads)),
@@ -78,10 +70,24 @@ func (r *InstrumentationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		status.Conditions[0].LastTransitionTime = profile.Status.Conditions[0].LastTransitionTime
 	}
 	status.ObservedGeneration = profile.Generation
+
+	// Status first: the webhook reads the revert from status, so it must be
+	// persisted before the failing pod is deleted and a replacement admitted.
+	// A merge patch cannot hit a resourceVersion conflict from a stale cache.
 	if !statusEqual(profile.Status, status) {
+		original := profile.DeepCopy()
 		profile.Status = status
-		if err := r.Status().Update(ctx, profile); err != nil {
+		if err := r.Status().Patch(ctx, profile, client.MergeFrom(original)); err != nil {
+			log.Error(err, "instrumentation status not written; reverts are not applied until it is")
 			return ctrl.Result{}, err
+		}
+	}
+	for _, rv := range reverts {
+		log.Info("canary reverted", "workload", rv.workload.Kind+"/"+rv.workload.Name, "namespace", rv.pod.Namespace, "pod", rv.pod.Name, "reason", rv.reason, "deletePod", profile.AutoRevertEnabled())
+		if profile.AutoRevertEnabled() {
+			if err := r.Delete(ctx, &rv.pod, client.Preconditions{UID: &rv.pod.UID}); err != nil && !apierrors.IsNotFound(err) {
+				log.Error(err, "failed to delete reverted canary pod", "pod", rv.pod.Namespace+"/"+rv.pod.Name)
+			}
 		}
 	}
 	return ctrl.Result{RequeueAfter: instrumentationRequeue}, nil
@@ -132,6 +138,11 @@ func (r *InstrumentationReconciler) rollUp(profile *v1.Instrumentation, pods []c
 			}
 		}
 		if g.State == v1.WorkloadStateReverted {
+			// Admitted with the agent in the moment between the revert and the
+			// webhook seeing it: replace it like the canary itself.
+			if p.Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeCanary {
+				reverts = append(reverts, revert{pod: *p, workload: w, reason: g.Reason + " (replacement pod admitted before the revert was visible)"})
+			}
 			continue
 		}
 		if p.Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeCanary {
