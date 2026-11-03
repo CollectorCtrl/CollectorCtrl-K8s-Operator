@@ -1,0 +1,46 @@
+{{- if and .Values.instrumentation.enabled .Values.instrumentation.defaultProfile.create }}
+{{- $p := .Values.instrumentation.defaultProfile }}
+{{- if not $p.exporterEndpoint }}
+{{- fail "instrumentation.defaultProfile.exporterEndpoint is required when the default profile is created" }}
+{{- end }}
+# Default Instrumentation profile: used by opted-in workloads whose namespace
+# has no profile of its own and that name none.
+apiVersion: collectorctrl.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: default
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+spec:
+  exporter:
+    endpoint: {{ $p.exporterEndpoint | quote }}
+    protocol: {{ $p.exporterProtocol | quote }}
+  {{- with $p.propagators }}
+  propagators:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if $p.sampler.type }}
+  sampler:
+    type: {{ $p.sampler.type | quote }}
+    {{- with $p.sampler.argument }}
+    argument: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  {{- with $p.resourceAttributes }}
+  resourceAttributes:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if $p.javaImage }}
+  java:
+    image: {{ $p.javaImage | quote }}
+  {{- end }}
+  registry:
+    readImageConfig: {{ $p.readImageConfig }}
+    {{- with $p.registryCredentialsSecret }}
+    credentialsSecret: {{ . | quote }}
+    {{- end }}
+  canary:
+    maxRestarts: {{ $p.canary.maxRestarts }}
+    autoRevert: {{ $p.canary.autoRevert }}
+{{- end }}

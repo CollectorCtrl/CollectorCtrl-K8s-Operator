@@ -82,6 +82,16 @@ spec:
               value: "5m"
             - name: READINESS_EXCLUDE_NAMESPACES
               value: "kube-system,kube-public,kube-node-lease"
+            - name: INSTRUMENTATION
+              # "true" serves the Java auto-instrumentation webhook; apply
+              # deploy/webhook.yaml and deploy/crd-instrumentation.yaml too.
+              value: "false"
+            - name: WEBHOOK_SERVICE_NAME
+              value: collectorctrl-operator-webhook
+            - name: WEBHOOK_CONFIGURATION_NAME
+              value: collectorctrl-operator-java
+            - name: WEBHOOK_CERT_DIR
+              value: /tmp/k8s-webhook-server/serving-certs
             # Private CA: create ConfigMap collectorctrl-opamp-ca (key ca.crt),
             # then uncomment this env var and the opamp-ca mount and volume.
             # - name: OPAMP_CA_FILE
@@ -89,6 +99,8 @@ spec:
           volumeMounts:
             - name: credentials
               mountPath: /var/lib/collectorctrl
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
             # - name: opamp-ca
             #   mountPath: /etc/collectorctrl/ca
             #   readOnly: true
@@ -98,6 +110,9 @@ spec:
               protocol: TCP
             - name: health
               containerPort: 8081
+              protocol: TCP
+            - name: webhook
+              containerPort: 9443
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -122,6 +137,11 @@ spec:
         - name: credentials
           persistentVolumeClaim:
             claimName: collectorctrl-operator-credentials
+        # Serving certificate for the webhook, generated at start.
+        - name: webhook-certs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         # - name: opamp-ca
         #   configMap:
         #     name: collectorctrl-opamp-ca

@@ -102,6 +102,9 @@ helm-lint: ## Lint the chart and render it with default and alternative values.
 	helm template ci $(CHART) $(CHART_TEST_VALUES) --set rbac.clusterScoped=false --set clusterID=ci >/dev/null
 	helm template ci $(CHART) $(CHART_TEST_VALUES) -f $(CHART)/values-openshift.yaml >/dev/null
 	helm template ci $(CHART) $(CHART_TEST_VALUES) --set serviceMonitor.enabled=true | grep -q 'name: ci-collectorctrl-operator-metrics'
+	helm template ci $(CHART) $(CHART_TEST_VALUES) --set instrumentation.enabled=true --set instrumentation.defaultProfile.create=true \
+	  --set instrumentation.defaultProfile.exporterEndpoint=http://otel-agent.observability:4318 | grep -q 'kind: MutatingWebhookConfiguration'
+	helm template ci $(CHART) $(CHART_TEST_VALUES) --set instrumentation.enabled=true --set rbac.clusterScoped=false --set clusterID=ci >/dev/null
 
 .PHONY: helm-template
 helm-template: ## Render the chart to stdout.

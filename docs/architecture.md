@@ -6,8 +6,10 @@ inferred. For installation and settings see [installation.md](installation.md) a
 
 ## Design principles
 
-1. **Observe, never control.** The operator writes nothing except `CollectorMonitor` status. Deployment stays with
-   the customer's Helm charts, vendor operators and CI/CD.
+1. **Observe, never control collectors.** The operator writes nothing to collector workloads or ConfigMaps;
+   deployment stays with the customer's Helm charts, vendor operators and CI/CD. The one thing it changes, when
+   enabled and asked per workload, is new application pods: it adds the OpenTelemetry Java agent through an
+   admission webhook that fails open ([auto-instrumentation.md](auto-instrumentation.md)).
 2. **Opt in.** Configuration is read only from collectors that opt in (label or `CollectorMonitor`). Everything else
    contributes metadata and image names only.
 3. **Infer from evidence.** Role, stack and topology come from configuration and Kubernetes metadata, never from
@@ -161,8 +163,9 @@ A workload is listed when a container image's **repository path** (never its tag
 | `source`, `observed_at`, `report_interval_seconds`, `cluster_id`, `cluster_name` | As above |
 | `registry_checked` | Always `false` in 0.8: image config (Dockerfile `ENV`) was not read |
 | `injectors_checked` | `false` when namespaces or webhooks could not be listed (namespace-scoped install, RBAC) |
-| `injectors[]` | APM injector webhooks: `name` (MutatingWebhookConfiguration), `vendor`, `mode` (`request` or `selector`), `webhooks[]`, `failure_policy` |
-| `workloads[]` | `namespace`, `kind`, `name`, `uid`, `stack`, `stack_source`, `pod` (running pod inspected, if any), `verdict`, `containers[]` |
+| `injectors[]` | APM injector webhooks: `name` (MutatingWebhookConfiguration), `vendor` (including `collectorctrl` for the operator's own webhook, which counts as the OpenTelemetry family), `mode` (`request` or `selector`), `webhooks[]`, `failure_policy` |
+| `workloads[]` | `namespace`, `kind`, `name`, `uid`, `stack`, `stack_source`, `pod` (running pod inspected, if any), `verdict`, `containers[]`, `instrumentation` (0.9, optional) |
+| `instrumentation` | CollectorCtrl's own Java auto-instrumentation for the workload: `requested` (`all`, `canary`), `profile`, `state` (`pending`, `canary`, `rolled-out`, `reverted`, `skipped`), `pods` carrying the agent, `reason` (skip or revert) |
 | `containers[]` | `name`, `image`, `language`, `language_source`, `agents[]`, `requests[]`, `selected_by[]`, `launcher[]`, `vendor_env[]`, `verdict`, `findings[]`, `reasons[]` (finding messages, for older readers) |
 | `findings[]` | `code` (stable, see below), `severity` (`blocker`, `warning`, `info`), `subject`, `message` |
 | `agents[]` | `vendor`, `language`, `mechanism`, `evidence`, `injected` (only in the running pod) |
@@ -279,7 +282,8 @@ references are recorded as unresolved, never read.
 
 **Requests** are intent, not agents: `instrumentation.opentelemetry.io/inject-*` on the pod template or namespace,
 New Relic's `instrumentation.newrelic.com/inject-*`, Datadog's `admission.datadoghq.com/enabled` and `*-lib.version`,
-Elastic's `co.elastic.apm/attach`.
+Elastic's `co.elastic.apm/attach`, and this operator's own `collectorctrl.io/instrument-java` label (vendor
+`collectorctrl`, matched only by the operator's own webhook).
 
 **Injectors.** Mutating webhooks that act on pod `CREATE` and belong to an APM vendor (by configuration, webhook
 or service name). Hooks that only add metadata or settings (New Relic metadata injection; Datadog's agent config,
@@ -326,3 +330,37 @@ checked. *Unknown* containers still get merge warnings for any launcher variable
 | Workload deleted | Connection closed; the entry stays offline in CollectorCtrl until removed |
 | Operator restart | Identities and credentials reused; observation resumes within one interval |
 | Namespaces or webhooks not listable | Readiness still sent with `injectors_checked: false`; every container says injectors were not checked |
+
+## Java auto-instrumentation
+
+Enabled with `INSTRUMENTATION=true`. Three parts, all in the one operator process:
+
+```mermaid
+flowchart LR
+    api["API server<br/>pod CREATE with<br/>collectorctrl.io/instrument-java"] -->|"MutatingWebhookConfiguration<br/>failurePolicy Ignore, 5 s"| wh["Pod webhook<br/><i>operator/webhook</i>"]
+    wh --> dec["instrument.Decide<br/><i>profile · revert · canary · readiness analysis<br/>· container · JAVA_TOOL_OPTIONS source</i>"]
+    dec --> reg["registry.Reader<br/><i>image config, if allowed</i>"]
+    dec --> apply["instrument.Apply<br/><i>init container · volume · env · markers</i>"]
+    apply --> api
+    pods[("Pods labelled<br/>collectorctrl.io/instrumented")] --> ic["Instrumentation controller<br/><i>status.workloads[], canary revert</i>"]
+    ic -->|"status"| inst[("Instrumentation")]
+    inst --> dec
+```
+
+- **Certificate.** At start the operator writes a self-signed CA and a serving certificate for the webhook Service
+  into an in-memory volume, and a runnable publishes the CA into its own `MutatingWebhookConfiguration` (retrying
+  until the object exists, re-checking every minute because a chart upgrade rewrites it without the bundle).
+- **Decision** (`internal/instrument`, pure functions, tested in `java_test.go`): see
+  [auto-instrumentation.md](auto-instrumentation.md#what-the-webhook-does) for the ordered rules and codes. The
+  "other agents" step is `readiness.Analyze` on the pod itself, with the operator's own webhook removed from the
+  injector list, so the webhook and the readiness report can never disagree about what counts as an agent.
+- **Image configuration** (`internal/registry`): OCI distribution API, anonymous or `dockerconfigjson` credentials,
+  bearer token challenge, `linux/amd64` platform of an index, config blob `Env` only. Results and failures are cached
+  (tags 10 min, digests 24 h, failures 1 min) so a slow registry costs one admission, not every one.
+- **Controller** (`operator/controllers/instrumentation_controller.go`): groups instrumented pods by profile,
+  workload and revision (pod template hash or controller revision), counts them, and reverts a canary revision whose
+  pod restarted `canary.maxRestarts` times or is in `CrashLoopBackOff`. The revert is recorded in status (the
+  webhook reads it) and, with `autoRevert`, the pod is deleted so its replacement starts clean. The record stays
+  while any pod of that revision still asks for the agent and is dropped with the revision.
+- **Readiness** adds the `instrumentation` state per workload and treats the operator's webhook as an
+  OpenTelemetry-family injector in request mode, so an injected agent is *instrumented*, never a conflict.

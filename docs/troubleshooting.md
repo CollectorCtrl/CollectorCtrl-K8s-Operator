@@ -94,6 +94,24 @@ kubectl -n collectorctrl-operator logs <pod> --previous
 | A webhook you rely on is not listed | It does not mutate pods on CREATE, or its name, webhook name and service name do not identify an APM vendor | Open an issue with the webhook's name and service so the classifier can learn it |
 | Workloads in a namespace are missing | The namespace is in `readiness.excludeNamespaces`, or it is the operator's own namespace | Adjust `readiness.excludeNamespaces` |
 
+## Java auto-instrumentation
+
+Start with the pod: `kubectl get pod <name> -o jsonpath='{.metadata.annotations}'` shows
+`collectorctrl.io/instrumentation-status` and `-reason` for every pod the webhook saw.
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| No `instrumentation-status` annotation at all | The webhook was not called: `instrumentation.enabled=false`, the label is not on the pod template (or not `true`/`canary`), the namespace is excluded, the operator was down or slow (`failurePolicy: Ignore`), or the CA bundle is not published yet | `kubectl get mutatingwebhookconfiguration collectorctrl-operator-java -o jsonpath='{.webhooks[0].clientConfig.caBundle}'` must be non-empty; check operator logs for `webhook CA bundle published`; recreate the pod |
+| `skipped` with `no_profile` | No `Instrumentation` in the namespace, none named, and no `default` in the operator namespace | Create one (`instrumentation.defaultProfile.create=true`) or annotate `collectorctrl.io/instrumentation` |
+| `skipped` with `agent_present` or `injector_present` | Another APM agent or injector already acts on this pod | Intended: remove the other agent first. The readiness report shows the same finding |
+| `skipped` with `launcher_unreadable` | `JAVA_TOOL_OPTIONS` comes from a Secret, a field reference, or `envFrom` names a Secret | Move the flags to a literal value or ConfigMap, or set `collectorctrl.io/instrument-force: "true"` after confirming the Secret does not set `JAVA_TOOL_OPTIONS` |
+| `skipped` with `container_ambiguous` or `not_java` | Several candidate containers, or no container looks like Java | Annotate `collectorctrl.io/instrument-container` and, if needed, `collectorctrl.io/language: java` on the pod template |
+| `skipped` with `reverted` | A canary pod of this revision crash-looped | Read `status.workloads[]` of the profile for the reason; fix and roll out a new revision |
+| Both canary pods got the agent | Two pods were admitted in the same instant and the pod cache lagged | Known limit; use `replicas: 1` for the canary step or accept two |
+| Pod stuck in `Init:ImagePullBackOff` | The agent image (`ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java`) is not reachable | Mirror it and set `spec.java.image` on the profile |
+| JVM flags from the Dockerfile disappeared | `env` shadows image `ENV`, and `registry.readImageConfig` is off (`image_env_not_checked` in the reason) | Set `readImageConfig: true` (and `credentialsSecret` for private images), or put the flags into the pod spec |
+| `webhook configuration not updated yet` repeats in the logs | The `MutatingWebhookConfiguration` does not exist or RBAC lacks `get`/`update` on it | Check `WEBHOOK_CONFIGURATION_NAME` matches the object; with raw manifests apply `deploy/webhook.yaml` |
+
 ## Getting help
 
 Open an issue with the operator version (`starting manager` log line), Kubernetes version, the collector chart and

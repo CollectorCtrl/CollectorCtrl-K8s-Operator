@@ -137,3 +137,45 @@ serviceMonitor:
 # Leave disabled; enabling it only adds a Lease lock and its RBAC.
 leaderElection:
   enabled: false
+
+# Java auto-instrumentation (0.9). Off by default. When enabled, the operator
+# serves a pod-mutating webhook (failurePolicy Ignore, so it can never block a
+# pod) that adds the OpenTelemetry Java agent to pods whose template carries
+# collectorctrl.io/instrument-java: "true" (every pod) or "canary" (one pod per
+# revision). Where telemetry goes comes from an Instrumentation profile: one in
+# the workload's namespace, the one named in collectorctrl.io/instrumentation,
+# or the "default" profile in this release's namespace. Nothing is injected
+# where another APM agent or injector webhook is already present.
+instrumentation:
+  enabled: false
+  # Create the "default" Instrumentation profile in the release namespace.
+  defaultProfile:
+    create: false
+    # OTLP endpoint the agents send to, e.g. http://otel-agent.observability:4318
+    exporterEndpoint: ""
+    exporterProtocol: http/protobuf
+    propagators: [tracecontext, baggage]
+    sampler: {}
+    resourceAttributes: {}
+    # Agent image (empty: the upstream autoinstrumentation-java image pinned in the operator).
+    javaImage: ""
+    # Read image configuration from the registry so JVM flags baked into the
+    # image (Dockerfile ENV JAVA_TOOL_OPTIONS) are kept. Needs registry access
+    # from the operator pod; private images need registryCredentialsSecret.
+    readImageConfig: false
+    registryCredentialsSecret: ""
+    canary:
+      maxRestarts: 3
+      autoRevert: true
+  # Names of kubernetes.io/dockerconfigjson Secrets (in profile namespaces)
+  # that profiles may name in spec.registry.credentialsSecret. The operator is
+  # granted get on exactly these Secrets and nothing else.
+  registryCredentialSecrets: []
+  # Namespaces the webhook never touches (the release namespace is always excluded).
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  webhook:
+    # Timeout for the API server's call to the webhook.
+    timeoutSeconds: 5

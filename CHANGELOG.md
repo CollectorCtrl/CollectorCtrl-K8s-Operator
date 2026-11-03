@@ -5,6 +5,51 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Java auto-instrumentation** (off by default, `instrumentation.enabled=true`). A pod-mutating admission webhook
+  (`failurePolicy: Ignore`, 5 s timeout, always *allowed*) adds the OpenTelemetry Java agent to new pods whose
+  template carries `collectorctrl.io/instrument-java: "true"` (every pod) or `"canary"` (one pod per workload
+  revision). The webhook runs the readiness analysis on each pod and skips it, with a stated reason, when any
+  vendor's agent is loaded or another injector webhook selects it. `JAVA_TOOL_OPTIONS` from the pod spec, a
+  ConfigMap key or `envFrom` ConfigMap is extended, never replaced; values from Secrets make the pod skip
+  (`launcher_unreadable`) unless `collectorctrl.io/instrument-force` is set.
+- **`Instrumentation` CRD** (`instrumentations.collectorctrl.io`, short name `inst`): a central profile with the
+  OTLP exporter, propagators, sampler, resource attributes, extra `OTEL_*` variables, the agent image, registry
+  settings and canary thresholds. Profile selection: `collectorctrl.io/instrumentation` annotation, else the
+  namespace's single profile, else `default` in the operator namespace (`instrumentation.defaultProfile.create`).
+- **Image `ENV` preserved.** With `spec.registry.readImageConfig: true` the operator reads the image configuration
+  from the registry (OCI distribution API, anonymous or a `dockerconfigjson` Secret you name, no layers) and merges
+  a baked-in `JAVA_TOOL_OPTIONS`; otherwise the pod is noted `image_env_not_checked`.
+- **Canary and revert.** The `Instrumentation` controller tracks instrumented pods per workload revision in
+  `status.workloads[]`. A canary pod that restarts `canary.maxRestarts` times (default 3) or crash-loops reverts
+  its revision: the webhook stops injecting into it, and with `canary.autoRevert` (default) the pod is deleted so
+  its replacement starts without the agent. A new revision is tried again.
+- Every pod the webhook saw carries `collectorctrl.io/instrumentation-status` (`injected`/`skipped`) and
+  `-reason` with a stable code (`no_profile`, `reverted`, `canary_present`, `agent_present`, `injector_present`,
+  `container_ambiguous`, `container_not_found`, `not_java`, `launcher_unreadable`); injected pods also get
+  `-mode`, `-revision`, the profile reference and the label `collectorctrl.io/instrumented: java`.
+- The readiness report's `workloads[]` gains an optional `instrumentation` object (`requested`, `profile`,
+  `state`: `pending`/`canary`/`rolled-out`/`reverted`/`skipped`, `pods`, `reason`); the operator's own webhook is
+  classified as an OpenTelemetry-family injector (`vendor: collectorctrl`, request mode) and its opt-in label as a
+  request, so an injected agent is *instrumented*, never a conflict.
+- Self-managed webhook certificate: generated at every start into an in-memory volume, CA bundle published into
+  the operator's `MutatingWebhookConfiguration` (no cert-manager). Helm values `instrumentation.*`; raw manifests
+  `deploy/crd-instrumentation.yaml`, `deploy/webhook.yaml`, `deploy/example-instrumentation.yaml`
+  (`INSTRUMENTATION=true ./deploy/deploy.sh`). Environment variables `INSTRUMENTATION`, `WEBHOOK_SERVICE_NAME`,
+  `WEBHOOK_CONFIGURATION_NAME`, `WEBHOOK_CERT_DIR`.
+- Documentation: [docs/auto-instrumentation.md](docs/auto-instrumentation.md); the kind end-to-end test covers
+  injection, canary, foreign-agent skip and status roll-up.
+
+### Changed
+- RBAC, only with `instrumentation.enabled=true`: `get`/`list`/`watch` on `instrumentations`, `update`/`patch` on
+  their status, `get` on namespaces, `delete` on pods (auto revert), `list` on all and `get`/`update`/`patch` on
+  the operator's own `mutatingwebhookconfigurations`, and `get` on the Secrets listed in
+  `instrumentation.registryCredentialSecrets`. Observation stays read-only.
+
+### Requires
+- CollectorCtrl server that reads `instrumentation` in the readiness report to show rollout state. Older servers
+  ignore the field.
+
 ## [0.8.0] - 2026-10-28
 
 ### Added

@@ -1,0 +1,39 @@
+# Example Instrumentation profile: where instrumented Java processes send
+# telemetry and how the rollout behaves. Named "default" in the operator
+# namespace it applies to every opted-in workload whose namespace has no
+# profile of its own. Opt a workload in with the pod template label
+# collectorctrl.io/instrument-java: "canary" (one pod) or "true" (all pods).
+apiVersion: collectorctrl.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: default
+  namespace: collectorctrl-operator
+spec:
+  exporter:
+    # Your collector's OTLP endpoint (an agent DaemonSet or a gateway Service).
+    endpoint: http://otel-agent.observability:4318
+    protocol: http/protobuf
+  propagators: [tracecontext, baggage]
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  resourceAttributes:
+    deployment.environment: production
+  # Extra OTEL_* settings for every instrumented container.
+  env:
+    - name: OTEL_LOGS_EXPORTER
+      value: none
+  java:
+    # Any image carrying an OpenTelemetry Java agent at /javaagent.jar.
+    # Empty: the upstream autoinstrumentation-java image pinned in the operator.
+    image: ""
+  registry:
+    # Read the image configuration from the registry so JVM flags baked into
+    # the image (Dockerfile ENV JAVA_TOOL_OPTIONS) are kept. Private images:
+    # name a kubernetes.io/dockerconfigjson Secret in this namespace and grant
+    # the operator get on it (Helm: instrumentation.registryCredentialSecrets).
+    readImageConfig: false
+    # credentialsSecret: registry-pull
+  canary:
+    maxRestarts: 3
+    autoRevert: true

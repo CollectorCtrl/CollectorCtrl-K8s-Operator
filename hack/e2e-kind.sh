@@ -5,7 +5,8 @@
 # End-to-end smoke test on a kind cluster (used by CI, runnable locally):
 # installs the chart with a locally built image, adds sample workloads, and
 # checks that the operator starts, holds only the permissions it documents,
-# reconciles without RBAC errors, and keeps its credential volume on uninstall.
+# reconciles without RBAC errors, injects the Java agent into opted-in pods
+# (one pod for a canary), and keeps its credential volume on uninstall.
 # No CollectorCtrl server is needed: the OpAMP endpoint is unreachable on
 # purpose, so connection errors are expected and ignored.
 #
@@ -88,22 +89,104 @@ kubectl -n "$NS" create secret generic collectorctrl-auth --from-literal=enrollm
 helm upgrade --install "$RELEASE" "$CHART" --namespace "$NS" --wait --timeout 3m \
   --set image.repository="${IMAGE%:*}" --set image.tag="${IMAGE##*:}" --set image.pullPolicy=Never \
   --set opamp.server=wss://collectorctrl.invalid:4320/v1/opamp \
-  --set opamp.enrollmentSecret=collectorctrl-auth --set clusterName=e2e
+  --set opamp.enrollmentSecret=collectorctrl-auth --set clusterName=e2e \
+  --set instrumentation.enabled=true --set instrumentation.defaultProfile.create=true \
+  --set instrumentation.defaultProfile.exporterEndpoint=http://otel-gateway.observability:4318
 kubectl -n "$NS" rollout status "deploy/${RELEASE}" --timeout=120s || fail "operator did not become ready"
 
 step "RBAC is exactly what the docs promise"
 can() { kubectl auth can-i --as="$SA" "$@" >/dev/null 2>&1; }
 for want in "list deployments.apps -A" "watch pods -A" "list configmaps -A" "list services -A" \
-  "list namespaces" "list mutatingwebhookconfigurations.admissionregistration.k8s.io" "get namespaces/kube-system"; do
+  "list namespaces" "list mutatingwebhookconfigurations.admissionregistration.k8s.io" "get namespaces/kube-system" \
+  "list instrumentations.collectorctrl.io -A" "patch instrumentations.collectorctrl.io/status -A" "delete pods -A" \
+  "update mutatingwebhookconfigurations.admissionregistration.k8s.io/${RELEASE}-java"; do
   # shellcheck disable=SC2086
   can $want || fail "missing permission: $want"
 done
 for deny in "get secrets -A" "list secrets -A" "update deployments.apps -A" "patch configmaps -A" \
-  "delete pods -A" "create pods -A" "update mutatingwebhookconfigurations.admissionregistration.k8s.io"; do
+  "create pods -A" "update pods -A" "update mutatingwebhookconfigurations.admissionregistration.k8s.io/some-other-webhook" \
+  "create mutatingwebhookconfigurations.admissionregistration.k8s.io" "update instrumentations.collectorctrl.io -A"; do
   # shellcheck disable=SC2086
   if can $deny; then fail "unexpected permission: $deny"; fi
 done
 echo "RBAC ok"
+
+step "Webhook: CA bundle published, opted-in Java pods get the agent, canary is one pod"
+for _ in $(seq 1 30); do
+  CA="$(kubectl get mutatingwebhookconfiguration "${RELEASE}-java" -o jsonpath='{.webhooks[0].clientConfig.caBundle}')"
+  [ -n "$CA" ] && break
+  sleep 2
+done
+[ -n "$CA" ] || fail "webhook caBundle was not published"
+kubectl apply -f - <<'EOF2'
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: billing, namespace: shop}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: billing}}
+  template:
+    metadata: {labels: {app: billing, collectorctrl.io/instrument-java: "true"}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          env: [{name: JAVA_TOOL_OPTIONS, value: "-Xmx256m"}, {name: JAVA_HOME, value: /opt/java}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: inventory, namespace: shop, annotations: {collectorctrl.io/language: java}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: inventory}}
+  template:
+    metadata: {labels: {app: inventory, collectorctrl.io/instrument-java: canary}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: legacy, namespace: shop}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: legacy}}
+  template:
+    metadata: {labels: {app: legacy, collectorctrl.io/instrument-java: "true"}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          env: [{name: JAVA_TOOL_OPTIONS, value: "-javaagent:/opt/dd/dd-java-agent.jar"}]
+EOF2
+kubectl -n shop rollout status deploy/billing --timeout=180s || fail "billing did not roll out (agent init image pull?)"
+kubectl -n shop rollout status deploy/inventory --timeout=180s || fail "inventory did not roll out"
+kubectl -n shop rollout status deploy/legacy --timeout=120s || fail "legacy did not roll out"
+BILLING="$(kubectl -n shop get pods -l app=billing -o jsonpath='{.items[0].metadata.name}')"
+kubectl -n shop get pod "$BILLING" -o jsonpath='{.spec.initContainers[*].name}' | grep -q collectorctrl-java-agent || fail "billing pod has no agent init container"
+JTO="$(kubectl -n shop get pod "$BILLING" -o jsonpath='{.spec.containers[0].env[?(@.name=="JAVA_TOOL_OPTIONS")].value}')"
+case "$JTO" in
+  "-Xmx256m -javaagent:/collectorctrl/java/opentelemetry-javaagent.jar"*) ;;
+  *) fail "billing JAVA_TOOL_OPTIONS was not merged: $JTO" ;;
+esac
+kubectl -n shop get pod "$BILLING" -o jsonpath='{.spec.containers[0].env[?(@.name=="OTEL_EXPORTER_OTLP_ENDPOINT")].value}' | grep -q 'otel-gateway.observability:4318' || fail "billing pod lacks exporter settings"
+[ "$(kubectl -n shop get pod "$BILLING" -o jsonpath='{.metadata.annotations.collectorctrl\.io/instrumentation-status}')" = "injected" ] || fail "billing pod not marked injected"
+INSTRUMENTED="$(kubectl -n shop get pods -l app=inventory,collectorctrl.io/instrumented=java --no-headers | wc -l | tr -d ' ')"
+[ "$INSTRUMENTED" = "1" ] || fail "canary should instrument exactly one inventory pod, got $INSTRUMENTED"
+LEGACY="$(kubectl -n shop get pods -l app=legacy -o jsonpath='{.items[0].metadata.name}')"
+kubectl -n shop get pod "$LEGACY" -o jsonpath='{.metadata.annotations.collectorctrl\.io/instrumentation-reason}' | grep -q '^agent_present' || fail "legacy pod with a Datadog agent was not skipped"
+[ -z "$(kubectl -n shop get pod "$LEGACY" -o jsonpath='{.spec.initContainers}')" ] || fail "legacy pod was changed"
+for _ in $(seq 1 30); do
+  PODS="$(kubectl -n "$NS" get instrumentation default -o jsonpath='{.status.podsInstrumented}')"
+  [ "${PODS:-0}" = "2" ] && break
+  sleep 2
+done
+[ "${PODS:-0}" = "2" ] || fail "Instrumentation status reports ${PODS:-0} pods, want 2"
+echo "Webhook ok: merged flags, exporter set, canary limited to one pod, foreign agent left alone, status rolled up"
 
 step "Reconcile for a while, then read the logs"
 sleep 45

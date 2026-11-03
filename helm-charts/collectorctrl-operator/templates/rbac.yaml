@@ -53,6 +53,29 @@ rules:
     resources: ["mutatingwebhookconfigurations"]
     verbs: ["list"]
 {{- end }}
+{{- if .Values.instrumentation.enabled }}
+  # Java auto-instrumentation: profiles and their status, namespace labels for
+  # injector selectors, and deleting a failing canary pod (autoRevert).
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["instrumentations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["instrumentations/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+{{- if .Values.instrumentation.registryCredentialSecrets }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- toYaml .Values.instrumentation.registryCredentialSecrets | nindent 6 }}
+    verbs: ["get"]
+{{- end }}
+{{- end }}
 {{- if .Values.leaderElection.enabled }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -102,6 +125,24 @@ rules:
   - apiGroups: ["collectorctrl.io"]
     resources: ["collectormonitors/status"]
     verbs: ["get", "update", "patch"]
+{{- if .Values.instrumentation.enabled }}
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["instrumentations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["instrumentations/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+{{- if .Values.instrumentation.registryCredentialSecrets }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- toYaml .Values.instrumentation.registryCredentialSecrets | nindent 6 }}
+    verbs: ["get"]
+{{- end }}
+{{- end }}
 {{- if .Values.leaderElection.enabled }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -119,6 +160,40 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "collectorctrl-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "collectorctrl-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.instrumentation.enabled }}
+---
+# The webhook configuration is cluster-scoped: the operator writes its CA
+# bundle into exactly this one and lists all of them to see other injectors.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}-webhook
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    verbs: ["list"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    resourceNames: [{{ include "collectorctrl-operator.fullname" . }}-java]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}-webhook
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "collectorctrl-operator.fullname" . }}-webhook
 subjects:
   - kind: ServiceAccount
     name: {{ include "collectorctrl-operator.serviceAccountName" . }}

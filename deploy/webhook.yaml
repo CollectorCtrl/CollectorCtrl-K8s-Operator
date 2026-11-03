@@ -1,0 +1,114 @@
+# Java auto-instrumentation (optional). Apply together with
+# INSTRUMENTATION=true in deployment.yaml (deploy/deploy.sh does both when
+# INSTRUMENTATION=true). Mirrors the chart with instrumentation.enabled=true.
+#
+# The operator generates its own serving certificate at start and writes the
+# CA into caBundle below, so it is left empty here on purpose. failurePolicy
+# Ignore: if the operator is down, pods start without the agent.
+apiVersion: v1
+kind: Service
+metadata:
+  name: collectorctrl-operator-webhook
+  namespace: collectorctrl-operator
+  labels:
+    app.kubernetes.io/name: collectorctrl-operator
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: collectorctrl-operator
+    app.kubernetes.io/instance: collectorctrl-operator
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+      protocol: TCP
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: collectorctrl-operator-java
+  labels:
+    app.kubernetes.io/name: collectorctrl-operator
+    app.kubernetes.io/managed-by: kubectl
+webhooks:
+  - name: java.instrumentation.collectorctrl.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    reinvocationPolicy: IfNeeded
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: collectorctrl-operator-webhook
+        namespace: collectorctrl-operator
+        path: /mutate-pod-java
+        port: 443
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+    objectSelector:
+      matchExpressions:
+        - key: collectorctrl.io/instrument-java
+          operator: In
+          values: ["true", "canary"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - collectorctrl-operator
+            - kube-system
+            - kube-public
+            - kube-node-lease
+---
+# Extra permissions for auto-instrumentation: profiles and their status,
+# namespace labels, deleting a failing canary pod (autoRevert), and this one
+# webhook configuration (CA bundle). Add secrets/get with resourceNames for a
+# registry credentials Secret if a profile names one.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: collectorctrl-operator-instrumentation
+  labels:
+    app.kubernetes.io/name: collectorctrl-operator
+    app.kubernetes.io/managed-by: kubectl
+rules:
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["instrumentations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["collectorctrl.io"]
+    resources: ["instrumentations/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    verbs: ["list"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    resourceNames: ["collectorctrl-operator-java"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: collectorctrl-operator-instrumentation
+  labels:
+    app.kubernetes.io/name: collectorctrl-operator
+    app.kubernetes.io/managed-by: kubectl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: collectorctrl-operator-instrumentation
+subjects:
+  - kind: ServiceAccount
+    name: collectorctrl-operator
+    namespace: collectorctrl-operator

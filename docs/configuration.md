@@ -22,6 +22,13 @@ There are three ways to configure the operator:
 | `readiness.enabled` | `true` | Instrumentation readiness report on the cluster connection (needs `clusterObserver.enabled`). Adds `list` on namespaces and mutatingwebhookconfigurations to the ClusterRole |
 | `readiness.interval` | `5m` | How often the report is sent (1 min to 1 h) |
 | `readiness.excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease` | Namespaces never scanned. The operator's own namespace is always skipped |
+| `instrumentation.enabled` | `false` | Java auto-instrumentation: pod webhook (`failurePolicy: Ignore`), `Instrumentation` controller and extra RBAC ([auto-instrumentation.md](auto-instrumentation.md#permissions)) |
+| `instrumentation.defaultProfile.create` | `false` | Create the `default` `Instrumentation` in the release namespace |
+| `instrumentation.defaultProfile.exporterEndpoint` | `""` | OTLP endpoint for the default profile. Required when it is created |
+| `instrumentation.defaultProfile.exporterProtocol`, `propagators`, `sampler`, `resourceAttributes`, `javaImage`, `readImageConfig`, `registryCredentialsSecret`, `canary` | see `values.yaml` | The default profile's spec, field for field |
+| `instrumentation.registryCredentialSecrets` | `[]` | `dockerconfigjson` Secret names profiles may use; the operator gets `get` on exactly these |
+| `instrumentation.excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease` | Namespaces the webhook never sees (the release namespace is always excluded) |
+| `instrumentation.webhook.timeoutSeconds` | `5` | API server timeout for the webhook call |
 | `rbac.clusterScoped` | `true` | `true` watches all namespaces; `false` watches only the release namespace |
 | `rbac.authSecretNames` | `[]` | Secret names the operator may `get`, for monitors that use `auth.secretRef`. Empty grants no Secret access |
 | `credentialStorage.existingClaim` | `""` | Reuse an existing PVC for credentials |
@@ -58,6 +65,10 @@ The chart sets these values. You only need them when you run the binary yourself
 | `READINESS` | `false` disables the readiness report |
 | `READINESS_INTERVAL` | Go duration, default `5m` (1 min to 1 h) |
 | `READINESS_EXCLUDE_NAMESPACES` | Comma-separated; empty means the Kubernetes system namespaces |
+| `INSTRUMENTATION` | `true` serves the Java auto-instrumentation webhook on `:9443` and runs the `Instrumentation` controller |
+| `WEBHOOK_SERVICE_NAME` | Service the API server calls (default `collectorctrl-operator-webhook`); the serving certificate is issued for it |
+| `WEBHOOK_CONFIGURATION_NAME` | The operator's `MutatingWebhookConfiguration` (default `collectorctrl-operator-java`), which receives the CA bundle |
+| `WEBHOOK_CERT_DIR` | Where the generated certificate is written (default `/tmp/k8s-webhook-server/serving-certs`) |
 | `WATCH_NAMESPACE` | Restrict watches to one namespace |
 | `POD_NAMESPACE` | The operator's own namespace (set from the downward API) |
 
@@ -94,6 +105,23 @@ All are optional, and all go on the workload.
 
 [architecture.md](architecture.md#inference-rules) explains how the role, stack and topology are inferred when you
 don't set them.
+
+### Application workloads (auto-instrumentation)
+
+These go on the **pod template** of an application Deployment, StatefulSet or DaemonSet. The webhook reads them from
+the pod; see [auto-instrumentation.md](auto-instrumentation.md).
+
+| Label or annotation | Values | Effect |
+| --- | --- | --- |
+| label `collectorctrl.io/instrument-java` | `canary`, `true` | Add the OpenTelemetry Java agent to one pod per revision, or to every new pod |
+| annotation `collectorctrl.io/instrumentation` | `name` or `namespace/name` | Profile to use (default: the namespace's single profile, else `default` in the operator namespace) |
+| annotation `collectorctrl.io/instrument-container` | container name | Which container, when several application containers exist |
+| annotation `collectorctrl.io/instrument-force` | `"true"` | Proceed although `envFrom` names a Secret that could set `JAVA_TOOL_OPTIONS` |
+| annotation `collectorctrl.io/language` | `java` | Settles the language for the webhook when it cannot be inferred (on the template; the workload-level copy is read by readiness only) |
+
+The webhook writes back `collectorctrl.io/instrumentation-status` (`injected` or `skipped`),
+`collectorctrl.io/instrumentation-reason`, `collectorctrl.io/instrumentation-mode` and the label
+`collectorctrl.io/instrumented: java` on the pods it changed.
 
 ### Through vendor Helm charts
 
@@ -167,3 +195,49 @@ kubectl -n observability describe collectormonitor splunk-agent
 
 More examples are in [`deploy/example-collectormonitor.yaml`](../deploy/example-collectormonitor.yaml) and
 [`deploy/coralogix-collectormonitor.yaml`](../deploy/coralogix-collectormonitor.yaml).
+
+## Instrumentation resource
+
+An `Instrumentation` is a namespaced profile for [Java auto-instrumentation](auto-instrumentation.md). Only
+`spec.exporter.endpoint` is required.
+
+```yaml
+apiVersion: collectorctrl.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: default                   # "default" in the operator namespace is the cluster-wide fallback
+  namespace: collectorctrl-operator
+spec:
+  exporter:
+    endpoint: http://otel-agent.observability:4318   # OTLP endpoint; ^(https?|grpc)://
+    protocol: http/protobuf                           # http/protobuf (default) or grpc
+  propagators: [tracecontext, baggage]                # OTEL_PROPAGATORS
+  sampler:                                            # OTEL_TRACES_SAMPLER / _ARG
+    type: parentbased_traceidratio
+    argument: "0.25"
+  resourceAttributes:                                 # appended to OTEL_RESOURCE_ATTRIBUTES after the k8s.* attributes
+    deployment.environment: production
+  env:                                                # extra variables; a variable the container sets is never overwritten
+    - name: OTEL_LOGS_EXPORTER
+      value: none
+  java:
+    image: ""                                         # OpenTelemetry Java agent image with /javaagent.jar; empty = pinned upstream image
+    extraOptions: ""                                  # JVM flags appended after -javaagent
+    resources: {}                                     # init container resources (default 10m/32Mi requests, 200m/128Mi limits)
+  registry:
+    readImageConfig: false                            # read image ENV from the registry to keep baked-in JAVA_TOOL_OPTIONS
+    credentialsSecret: ""                             # kubernetes.io/dockerconfigjson Secret in this namespace
+  canary:
+    maxRestarts: 3                                    # restarts before a canary revision is reverted
+    autoRevert: true                                  # delete the failing canary pod so its replacement starts clean
+status:                                               # written by the operator
+  podsInstrumented: 3
+  workloads:
+    - {namespace: shop, kind: Deployment, name: orders, revision: 7d9f8, mode: canary, state: canary, pods: 1}
+    - {namespace: shop, kind: Deployment, name: legacy, revision: 5c1a2, mode: canary, state: reverted, pods: 0,
+       reason: "canary pod legacy-5c1a2-x restarted 3 times with the agent"}
+  conditions:
+    - {type: Ready, status: "True", reason: Active}
+```
+
+`kubectl get instrumentations -A` (short name `inst`) shows the endpoint and the number of instrumented pods.

@@ -69,8 +69,11 @@ type ClusterObserver struct {
 	ReadinessEnabled  bool
 	ReadinessInterval time.Duration
 	ReadinessExclude  []string
-	client            *opamp.Client
-	lastReadiness     time.Time
+	// InstrumentationEnabled adds each workload's auto-instrumentation state
+	// to the readiness report (requires the Instrumentation CRD).
+	InstrumentationEnabled bool
+	client                 *opamp.Client
+	lastReadiness          time.Time
 }
 
 // NeedLeaderElection keeps a single cluster connection per cluster.

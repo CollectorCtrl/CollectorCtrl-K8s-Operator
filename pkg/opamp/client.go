@@ -394,6 +394,19 @@ type ReadinessWorkload struct {
 	Pod         string                `json:"pod,omitempty"` // running pod inspected for injected agents
 	Verdict     string                `json:"verdict"`
 	Containers  []readiness.Container `json:"containers"`
+	// Instrumentation is set when the workload opted in to CollectorCtrl's own
+	// Java auto-instrumentation or carries its agent (0.9, optional).
+	Instrumentation *InstrumentationState `json:"instrumentation,omitempty"`
+}
+
+// InstrumentationState is the rollout state of CollectorCtrl's Java
+// auto-instrumentation for one workload.
+type InstrumentationState struct {
+	Requested string `json:"requested,omitempty"` // all or canary, from the pod template label
+	Profile   string `json:"profile,omitempty"`   // namespace/name of the Instrumentation used
+	State     string `json:"state"`               // pending, canary, rolled-out, reverted, skipped
+	Pods      int    `json:"pods"`                // running pods carrying the agent
+	Reason    string `json:"reason,omitempty"`    // skip or revert reason
 }
 
 func keyVal(k, v string) *protobufs.KeyValue {
