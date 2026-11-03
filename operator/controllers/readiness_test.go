@@ -21,6 +21,7 @@ import (
 
 	"github.com/collectorctrl/collectorctrl/internal/readiness"
 	v1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
+	"github.com/collectorctrl/collectorctrl/pkg/opamp"
 )
 
 func readinessFixture(t *testing.T, withWebhooks bool, objects ...client.Object) *ClusterObserver {
@@ -113,5 +114,75 @@ func TestReadinessWithoutWebhookAccess(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("reasons %v", rep.Workloads[0].Containers[0].Reasons)
+	}
+}
+
+func TestReadinessReportsInstrumentationState(t *testing.T) {
+	ctrl := true
+	optIn := func(name, mode string) *appsv1.Deployment {
+		d := appDeployment("shop", name, corev1.Container{Name: "app", Image: "acme/" + name + ":1", Command: []string{"java", "-jar", "app.jar"}})
+		d.Spec.Template.Labels[v1.LabelInstrumentJava] = mode
+		return d
+	}
+	podOf := func(d *appsv1.Deployment, name string, instrumented bool, ann map[string]string) []client.Object {
+		rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: d.Name + "-abc12", Namespace: "shop", UID: types.UID("rs-" + d.Name),
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: d.Name, UID: d.UID, Controller: &ctrl}}}}
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop", Labels: map[string]string{"pod-template-hash": "abc12"}, Annotations: ann,
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: &ctrl}}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+		if instrumented {
+			p.Labels[v1.LabelInstrumented] = "java"
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "JAVA_TOOL_OPTIONS", Value: "-javaagent:/collectorctrl/java/opentelemetry-javaagent.jar"}}
+		}
+		return []client.Object{rs, p}
+	}
+	rolled := optIn("orders", "true")
+	canary := optIn("payments", "canary")
+	skipped := optIn("legacy", "true")
+	pending := optIn("fresh", "true")
+	reverted := optIn("flaky", "canary")
+	plain := appDeployment("shop", "web", corev1.Container{Name: "app", Image: "node:20", Command: []string{"node", "s.js"}})
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec:   v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}},
+		Status: v1.InstrumentationStatus{Workloads: []v1.InstrumentedWorkload{{Namespace: "shop", Kind: "Deployment", Name: "flaky", Revision: "abc12", Mode: "canary", State: v1.WorkloadStateReverted, Reason: "canary pod flaky-abc12-q restarted 3 times with the agent"}}}}
+	objects := []client.Object{rolled, canary, skipped, pending, reverted, plain, profile}
+	objects = append(objects, podOf(rolled, "orders-abc12-a", true, map[string]string{v1.AnnotationInstrumentation: "collectorctrl-operator/default", v1.AnnotationInstrumentationMode: "all"})...)
+	objects = append(objects, podOf(canary, "payments-abc12-a", true, map[string]string{v1.AnnotationInstrumentation: "collectorctrl-operator/default", v1.AnnotationInstrumentationMode: "canary"})...)
+	objects = append(objects, podOf(skipped, "legacy-abc12-a", false, map[string]string{v1.AnnotationInstrumentationStatus: "skipped", v1.AnnotationInstrumentationReason: "agent_present: container app already loads a datadog java agent"})...)
+	objects = append(objects, podOf(reverted, "flaky-abc12-r", false, map[string]string{v1.AnnotationInstrumentationStatus: "skipped", v1.AnnotationInstrumentationReason: "reverted: ..."})...)
+	o := readinessFixture(t, false, objects...)
+	o.InstrumentationEnabled = true
+	rep, err := o.Readiness(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*opamp.InstrumentationState{}
+	for _, w := range rep.Workloads {
+		byName[w.Name] = w.Instrumentation
+	}
+	if byName["web"] != nil {
+		t.Errorf("web has no opt-in but state %+v", byName["web"])
+	}
+	check := func(name, state string, pods int, reasonFragment string) {
+		st := byName[name]
+		if st == nil {
+			t.Fatalf("%s: no instrumentation state", name)
+		}
+		if st.State != state || st.Pods != pods || !strings.Contains(st.Reason, reasonFragment) {
+			t.Errorf("%s: %+v", name, st)
+		}
+	}
+	check("orders", "rolled-out", 1, "")
+	check("payments", "canary", 1, "")
+	check("legacy", "skipped", 0, "agent_present")
+	check("fresh", "pending", 0, "")
+	check("flaky", "reverted", 0, "restarted 3 times")
+	if byName["orders"].Profile != "collectorctrl-operator/default" || byName["orders"].Requested != "all" || byName["payments"].Requested != "canary" {
+		t.Errorf("profile/requested: %+v %+v", byName["orders"], byName["payments"])
+	}
+	// Serialises under the documented key.
+	raw, _ := json.Marshal(rep.Workloads[0])
+	if !strings.Contains(string(raw), `"instrumentation":{`) {
+		t.Errorf("payload: %s", raw)
 	}
 }

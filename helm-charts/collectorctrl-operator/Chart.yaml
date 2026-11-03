@@ -1,6 +1,6 @@
 apiVersion: v2
 name: collectorctrl-operator
-description: Observes OpenTelemetry Collector workloads (any vendor chart) and application instrumentation readiness, and reports them to CollectorCtrl over OpAMP
+description: Observes OpenTelemetry Collector workloads (any vendor chart) and application instrumentation readiness, reports them to CollectorCtrl over OpAMP, and optionally adds the OpenTelemetry Java agent to opted-in workloads
 type: application
 version: 0.4.0
 appVersion: "0.8.0"
@@ -19,10 +19,21 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/prerelease: "true"
+  artifacthub.io/crds: |
+    - kind: CollectorMonitor
+      version: v1alpha1
+      name: collectormonitors.collectorctrl.io
+      displayName: CollectorMonitor
+      description: Observe one collector workload that cannot carry the opt-in label
+    - kind: Instrumentation
+      version: v1alpha1
+      name: instrumentations.collectorctrl.io
+      displayName: Instrumentation
+      description: Java auto-instrumentation profile (OTLP exporter, agent image, canary and revert)
   artifacthub.io/changes: |
     - kind: added
-      description: Instrumentation readiness report (languages, APM agents of any vendor, injector webhooks, launcher variables)
+      description: Java auto-instrumentation webhook and Instrumentation CRD (instrumentation.enabled, off by default)
     - kind: added
-      description: readiness.enabled, readiness.interval and readiness.excludeNamespaces values
+      description: instrumentation.defaultProfile values create a default profile; instrumentation.registryCredentialSecrets grants registry credential reads
     - kind: changed
-      description: RBAC adds list on namespaces and mutatingwebhookconfigurations while readiness is enabled
+      description: With instrumentation enabled, RBAC adds instrumentations, namespace get, pod delete and the operator's own webhook configuration

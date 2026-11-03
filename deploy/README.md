@@ -12,7 +12,10 @@ What gets installed in the `collectorctrl-operator` namespace:
 | `crd.yaml` | The `CollectorMonitor` CRD (same as the chart's `crds/crd.yaml`) |
 | `rbac.yaml` | ServiceAccount plus read-only ClusterRole/Binding (includes `list` on namespaces and webhooks for the readiness report). No Secret access is needed |
 | `credentials-pvc.yaml` | Retained 128Mi claim for per-workload credentials |
-| `deployment.yaml` | One observer replica, `Recreate` strategy, enrollment auth |
+| `deployment.yaml` | One observer replica, `Recreate` strategy, enrollment auth. `INSTRUMENTATION` is `"false"` |
+| `crd-instrumentation.yaml` | The `Instrumentation` CRD (same as the chart's `crds/instrumentation.yaml`) |
+| `webhook.yaml` | Optional: Service, `MutatingWebhookConfiguration` and extra RBAC for Java auto-instrumentation. Apply it and set `INSTRUMENTATION=true` (`INSTRUMENTATION=true ./deploy/deploy.sh`) |
+| `example-instrumentation.yaml` | A `default` auto-instrumentation profile to edit and apply |
 
 Image: `ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0` (set in `deployment.yaml`).
 
@@ -47,6 +50,7 @@ kubectl apply -f deploy/namespace.yaml
 kubectl create secret generic collectorctrl-auth -n collectorctrl-operator \
   --from-literal=enrollment-token=cce_YOUR_TOKEN
 kubectl apply -f deploy/crd.yaml
+kubectl apply -f deploy/crd-instrumentation.yaml
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/credentials-pvc.yaml
 # Edit OPAMP_SERVER in deployment.yaml first

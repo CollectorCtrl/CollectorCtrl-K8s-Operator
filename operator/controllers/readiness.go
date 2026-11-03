@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/collectorctrl/collectorctrl/internal/instrument"
 	"github.com/collectorctrl/collectorctrl/internal/readiness"
 	v1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
 	"github.com/collectorctrl/collectorctrl/pkg/opamp"
@@ -62,6 +63,13 @@ func (o *ClusterObserver) Readiness(ctx context.Context) (opamp.InstrumentationR
 	if err != nil {
 		return rep, err
 	}
+	var profiles []v1.Instrumentation
+	if o.InstrumentationEnabled {
+		var list v1.InstrumentationList
+		if err := r.List(ctx, &list); err == nil {
+			profiles = list.Items
+		}
+	}
 	excluded := map[string]bool{}
 	for _, ns := range o.ReadinessExclude {
 		excluded[ns] = true
@@ -108,6 +116,9 @@ func (o *ClusterObserver) Readiness(ctx context.Context) (opamp.InstrumentationR
 			verdicts = append(verdicts, c.Verdict)
 		}
 		w.Verdict = readiness.Worst(verdicts...)
+		if o.InstrumentationEnabled {
+			w.Instrumentation = instrumentationState(tmpl, podsByOwner[obj.GetUID()], profiles, ns, kind, obj.GetName())
+		}
 		rep.Workloads = append(rep.Workloads, w)
 	}
 
@@ -194,4 +205,54 @@ func newestRunning(pods []corev1.Pod) *corev1.Pod {
 		}
 	}
 	return best
+}
+
+// instrumentationState summarises CollectorCtrl's own Java auto-instrumentation
+// for a workload: what the template asks for, how many running pods carry the
+// agent, and why the newest pod was skipped or the revision reverted.
+func instrumentationState(tmpl corev1.PodTemplateSpec, pods []corev1.Pod, profiles []v1.Instrumentation, ns, kind, name string) *opamp.InstrumentationState {
+	st := &opamp.InstrumentationState{Requested: instrument.ModeOf(tmpl.Labels)}
+	var newest *corev1.Pod
+	for i := range pods {
+		p := &pods[i]
+		if p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		if p.Labels[v1.LabelInstrumented] != "" {
+			st.Pods++
+			if st.Profile == "" {
+				st.Profile = p.Annotations[v1.AnnotationInstrumentation]
+			}
+		}
+		if newest == nil || p.CreationTimestamp.After(newest.CreationTimestamp.Time) {
+			newest = p
+		}
+	}
+	if st.Requested == "" && st.Pods == 0 {
+		return nil
+	}
+	revision := ""
+	if newest != nil {
+		revision = instrument.OwnerOf(newest).Revision
+	}
+	for _, p := range profiles {
+		if w, ok := p.Reverted(ns, kind, name, revision); ok && revision != "" {
+			st.State, st.Reason, st.Profile = v1.WorkloadStateReverted, w.Reason, p.Namespace+"/"+p.Name
+			return st
+		}
+	}
+	switch {
+	case st.Pods > 0:
+		st.State = v1.WorkloadStateCanary
+		for i := range pods {
+			if pods[i].Annotations[v1.AnnotationInstrumentationMode] == v1.InstrumentModeAll && pods[i].Labels[v1.LabelInstrumented] != "" {
+				st.State = v1.WorkloadStateRolled
+			}
+		}
+	case newest != nil && newest.Annotations[v1.AnnotationInstrumentationStatus] == "skipped":
+		st.State, st.Reason = "skipped", newest.Annotations[v1.AnnotationInstrumentationReason]
+	default:
+		st.State = "pending" // opted in; no pod has been (re)created since
+	}
+	return st
 }

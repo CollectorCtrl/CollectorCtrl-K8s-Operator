@@ -1,0 +1,63 @@
+{{- if .Values.instrumentation.enabled }}
+# Java auto-instrumentation: the API server calls the operator for every new
+# pod that carries collectorctrl.io/instrument-java. The operator generates its
+# own serving certificate at start and writes the CA into caBundle below, so
+# the field is left empty here on purpose. failurePolicy Ignore: if the
+# operator is down, pods start without the agent rather than not at all.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "collectorctrl-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+      protocol: TCP
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "collectorctrl-operator.fullname" . }}-java
+  labels:
+    {{- include "collectorctrl-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: java.instrumentation.collectorctrl.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    reinvocationPolicy: IfNeeded
+    timeoutSeconds: {{ .Values.instrumentation.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ include "collectorctrl-operator.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-pod-java
+        port: 443
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+    objectSelector:
+      matchExpressions:
+        - key: collectorctrl.io/instrument-java
+          operator: In
+          values: ["true", "canary"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+            {{- range .Values.instrumentation.excludeNamespaces }}
+            - {{ . }}
+            {{- end }}
+{{- end }}

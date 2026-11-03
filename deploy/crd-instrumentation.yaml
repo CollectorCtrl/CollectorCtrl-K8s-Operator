@@ -1,0 +1,188 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: instrumentations.collectorctrl.io
+spec:
+  group: collectorctrl.io
+  names:
+    kind: Instrumentation
+    listKind: InstrumentationList
+    plural: instrumentations
+    singular: instrumentation
+    shortNames:
+      - inst
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            A central OpenTelemetry auto-instrumentation profile. Workloads opt in
+            with the collectorctrl.io/instrument-java label ("true" or "canary");
+            the webhook adds the OpenTelemetry Java agent and points it at the
+            profile's exporter.
+          properties:
+            spec:
+              type: object
+              required:
+                - exporter
+              properties:
+                exporter:
+                  type: object
+                  required:
+                    - endpoint
+                  properties:
+                    endpoint:
+                      type: string
+                      pattern: '^(https?|grpc)://.*$'
+                    protocol:
+                      type: string
+                      enum:
+                        - grpc
+                        - http/protobuf
+                propagators:
+                  type: array
+                  items:
+                    type: string
+                sampler:
+                  type: object
+                  required:
+                    - type
+                  properties:
+                    type:
+                      type: string
+                    argument:
+                      type: string
+                resourceAttributes:
+                  type: object
+                  additionalProperties:
+                    type: string
+                env:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - name
+                    properties:
+                      name:
+                        type: string
+                      value:
+                        type: string
+                      valueFrom:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                java:
+                  type: object
+                  properties:
+                    image:
+                      type: string
+                    extraOptions:
+                      type: string
+                    resources:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                registry:
+                  type: object
+                  properties:
+                    readImageConfig:
+                      type: boolean
+                      default: false
+                    credentialsSecret:
+                      type: string
+                canary:
+                  type: object
+                  properties:
+                    maxRestarts:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 3
+                    autoRevert:
+                      type: boolean
+                      default: true
+            status:
+              type: object
+              properties:
+                podsInstrumented:
+                  type: integer
+                  format: int32
+                observedGeneration:
+                  type: integer
+                  format: int64
+                workloads:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - namespace
+                      - kind
+                      - name
+                      - mode
+                      - state
+                      - pods
+                    properties:
+                      namespace:
+                        type: string
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                      revision:
+                        type: string
+                      mode:
+                        type: string
+                        enum:
+                          - canary
+                          - all
+                      state:
+                        type: string
+                        enum:
+                          - canary
+                          - rolled-out
+                          - reverted
+                      pods:
+                        type: integer
+                        format: int32
+                      reason:
+                        type: string
+                      lastTransition:
+                        type: string
+                        format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Endpoint
+          type: string
+          jsonPath: .spec.exporter.endpoint
+        - name: Pods
+          type: integer
+          jsonPath: .status.podsInstrumented
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

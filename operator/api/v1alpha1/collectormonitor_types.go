@@ -333,6 +333,8 @@ func AddToScheme(s *runtime.Scheme) error {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
 		s.AddKnownTypeWithName(GroupVersion.WithKind("CollectorMonitor"), &CollectorMonitor{})
 		s.AddKnownTypeWithName(GroupVersion.WithKind("CollectorMonitorList"), &CollectorMonitorList{})
+		s.AddKnownTypeWithName(GroupVersion.WithKind("Instrumentation"), &Instrumentation{})
+		s.AddKnownTypeWithName(GroupVersion.WithKind("InstrumentationList"), &InstrumentationList{})
 		metav1.AddToGroupVersion(s, GroupVersion)
 		return nil
 	})

@@ -12,8 +12,12 @@
 | Path | Contents |
 | --- | --- |
 | `cmd/operator` | Entry point: flags, environment, manager setup |
-| `operator/api/v1alpha1` | `CollectorMonitor` types |
-| `operator/controllers` | Reconcilers (`collectormonitor_controller.go`, `label_controller.go`), analysis (`insight.go`), cluster observer |
+| `operator/api/v1alpha1` | `CollectorMonitor` and `Instrumentation` types (hand-written CRDs in the chart's `crds/`, checked by `crd_test.go`) |
+| `operator/controllers` | Reconcilers (`collectormonitor_controller.go`, `label_controller.go`, `instrumentation_controller.go`), analysis (`insight.go`), cluster observer, readiness report |
+| `operator/webhook` | Pod-mutating admission webhook for Java auto-instrumentation, self-signed serving certificate, CA bundle publisher |
+| `internal/instrument` | Pure decision and mutation for Java agent injection |
+| `internal/readiness` | Instrumentation readiness inference (agents, injectors, launchers, languages, verdicts) |
+| `internal/registry` | OCI registry client that reads image configuration (`ENV`) without pulling layers |
 | `internal/otelconfig` | Collector config parsing, role inference, endpoint extraction |
 | `pkg/opamp` | OpAMP client, enrollment and credential storage, custom messages |
 | `pkg/api` | Wire types shared with the server |
@@ -54,8 +58,10 @@ make run
   `JAVA_TOOL_OPTIONS` or `NODE_OPTIONS` never reaches the report. Seed inputs run with every `go test`; add any
   crasher the fuzzer finds as a seed.
 - **End-to-end on kind** (`hack/e2e-kind.sh`, run by CI on two Kubernetes versions). It installs the chart with a
-  local image, adds an opted-in collector and two applications, checks that the service account has exactly the
-  documented permissions (and no Secret access), that the operator reconciles without RBAC errors or restarts, and
+  local image and auto-instrumentation enabled, adds an opted-in collector and sample applications, checks that
+  the service account has exactly the documented permissions (and no Secret access), that the operator reconciles
+  without RBAC errors or restarts, that the webhook publishes its CA bundle, merges `JAVA_TOOL_OPTIONS`, limits a
+  canary to one pod, leaves a pod with a foreign agent alone and rolls the count up into the profile's status, and
   that uninstalling keeps the credential volume. No server is needed:
 
   ```bash
@@ -70,7 +76,7 @@ make run
 
 ## Changing the wire contract
 
-`k8s_observation_v1` and `k8s_cluster_inventory_v1` are consumed by released servers. Only add optional fields, add
+`k8s_observation_v1`, `k8s_cluster_inventory_v1` and `k8s_instrumentation_readiness_v1` are consumed by released servers. Only add optional fields, add
 them to `pkg/api` and the server's validation in the same change, and document them in
 [architecture.md](architecture.md#wire-contracts). A breaking change needs a new message type (`…_v2`).
 

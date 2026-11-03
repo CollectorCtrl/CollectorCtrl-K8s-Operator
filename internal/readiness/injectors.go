@@ -35,6 +35,7 @@ type Injector struct {
 type hookSelector struct{ namespace, object labels.Selector }
 
 var injectorVendors = []vendorPattern{
+	{"collectorctrl", "collectorctrl"}, // this operator's own Java agent webhook (OpenTelemetry agent)
 	{"opentelemetry", "opentelemetry"},
 	{"datadog", "datadog"},
 	{"dynatrace", "dynatrace"},
@@ -47,7 +48,7 @@ var injectorVendors = []vendorPattern{
 	{"splunk", "splunk"},
 }
 
-var requestModeVendors = map[string]bool{"opentelemetry": true, "newrelic": true, "elastic": true, "splunk": true}
+var requestModeVendors = map[string]bool{"opentelemetry": true, "newrelic": true, "elastic": true, "splunk": true, "collectorctrl": true}
 
 // ClassifyWebhooks keeps the webhooks that belong to an APM vendor and mutate
 // pods on CREATE. Everything else (policy engines, service meshes) is ignored.
@@ -105,12 +106,13 @@ func injectsAgent(vendor, hook string) bool {
 }
 
 // SameFamily reports whether two vendors ship the same agent family: Splunk
-// distributes OpenTelemetry agents and installs the upstream OTel Operator.
+// distributes OpenTelemetry agents and installs the upstream OTel Operator,
+// and CollectorCtrl's own webhook injects the OpenTelemetry Java agent.
 func SameFamily(a, b string) bool {
 	if a == b {
 		return true
 	}
-	otel := func(v string) bool { return v == "opentelemetry" || v == "splunk" }
+	otel := func(v string) bool { return v == "opentelemetry" || v == "splunk" || v == "collectorctrl" }
 	return otel(a) && otel(b)
 }
 

@@ -447,8 +447,16 @@ func detectRequests(e *evidence, nsAnnotations map[string]string) []Request {
 	if e.labels["admission.datadoghq.com/enabled"] == "true" {
 		out = append(out, Request{Vendor: "datadog", Via: "pod label admission.datadoghq.com/enabled"})
 	}
+	switch strings.ToLower(strings.TrimSpace(e.labels[LabelInstrumentJava])) {
+	case "true", "all", "yes", "canary":
+		out = append(out, Request{Vendor: "collectorctrl", Language: LangJava, Via: "pod label " + LabelInstrumentJava})
+	}
 	return out
 }
+
+// LabelInstrumentJava is this operator's own opt-in for Java auto-instrumentation
+// (mirrors v1alpha1.LabelInstrumentJava without importing the API package).
+const LabelInstrumentJava = "collectorctrl.io/instrument-java"
 
 func langOrEmpty(s string) string {
 	if l, ok := initLangSuffix[s]; ok {

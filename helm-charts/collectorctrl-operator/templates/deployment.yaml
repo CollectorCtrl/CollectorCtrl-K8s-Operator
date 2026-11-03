@@ -69,6 +69,16 @@ spec:
               value: {{ .Values.readiness.interval | quote }}
             - name: READINESS_EXCLUDE_NAMESPACES
               value: {{ join "," .Values.readiness.excludeNamespaces | quote }}
+            - name: INSTRUMENTATION
+              value: {{ ternary "true" "false" .Values.instrumentation.enabled | quote }}
+            {{- if .Values.instrumentation.enabled }}
+            - name: WEBHOOK_SERVICE_NAME
+              value: {{ include "collectorctrl-operator.fullname" . }}-webhook
+            - name: WEBHOOK_CONFIGURATION_NAME
+              value: {{ include "collectorctrl-operator.fullname" . }}-java
+            - name: WEBHOOK_CERT_DIR
+              value: /tmp/k8s-webhook-server/serving-certs
+            {{- end }}
             {{- if not .Values.rbac.clusterScoped }}
             - name: WATCH_NAMESPACE
               value: {{ .Release.Namespace | quote }}
@@ -99,6 +109,10 @@ spec:
           volumeMounts:
             - name: credentials
               mountPath: /var/lib/collectorctrl
+          {{- if .Values.instrumentation.enabled }}
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+          {{- end }}
           {{- if .Values.opampCAConfigMap }}
             - name: opamp-ca
               mountPath: /etc/collectorctrl/ca
@@ -111,6 +125,11 @@ spec:
             - name: health
               containerPort: 8081
               protocol: TCP
+            {{- if .Values.instrumentation.enabled }}
+            - name: webhook
+              containerPort: 9443
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -121,6 +140,13 @@ spec:
         - name: credentials
           persistentVolumeClaim:
             claimName: {{ .Values.credentialStorage.existingClaim | default (printf "%s-credentials" (include "collectorctrl-operator.fullname" .)) }}
+      {{- if .Values.instrumentation.enabled }}
+        # Serving certificate for the webhook, generated at start.
+        - name: webhook-certs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+      {{- end }}
       {{- if .Values.opampCAConfigMap }}
         - name: opamp-ca
           configMap:

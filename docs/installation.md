@@ -131,11 +131,18 @@ enrollment token for its own credential. Credentials are stored on the volume mo
 helm upgrade collectorctrl-operator ./helm-charts/collectorctrl-operator -n collectorctrl-operator --reuse-values
 ```
 
-Helm does not upgrade CRDs. When a release changes the CRD, apply it first:
+Helm does not upgrade CRDs. When a release changes or adds a CRD, apply them first:
 
 ```bash
-kubectl apply -f helm-charts/collectorctrl-operator/crds/crd.yaml
+kubectl apply -f helm-charts/collectorctrl-operator/crds/
 ```
+
+### From 0.8
+
+- A second CRD, `instrumentations.collectorctrl.io`, is added (apply `crds/instrumentation.yaml`, or
+  `deploy/crd-instrumentation.yaml`). It is only used when `instrumentation.enabled=true`.
+- Nothing else changes for existing installs: auto-instrumentation is off by default and adds RBAC, a Service and a
+  `MutatingWebhookConfiguration` only when enabled ([auto-instrumentation.md](auto-instrumentation.md#enable-it)).
 
 ### From 0.6
 

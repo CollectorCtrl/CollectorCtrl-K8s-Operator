@@ -522,6 +522,7 @@ var sourceText = map[string]string{
 var vendorTitles = map[string]string{
 	"opentelemetry": "OpenTelemetry", "splunk": "Splunk", "datadog": "Datadog", "newrelic": "New Relic",
 	"appdynamics": "AppDynamics", "dynatrace": "Dynatrace", "elastic": "Elastic", "instana": "Instana", "unknown": "Unrecognised",
+	"collectorctrl": "CollectorCtrl",
 }
 
 func vendorTitle(v string) string {

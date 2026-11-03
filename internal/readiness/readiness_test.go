@@ -365,3 +365,37 @@ func TestLanguageAnnotationResolvesUnknown(t *testing.T) {
 		t.Errorf("got %s", ok.Language)
 	}
 }
+
+func TestCollectorCtrlInjectorIsOTelFamily(t *testing.T) {
+	fail := admissionv1.Fail
+	own := admissionv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: "collectorctrl-operator-java"}, Webhooks: []admissionv1.MutatingWebhook{{
+		Name: "java.instrumentation.collectorctrl.io", Rules: podCreate(), FailurePolicy: &fail,
+		ObjectSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: LabelInstrumentJava, Operator: metav1.LabelSelectorOpExists}}},
+	}}}
+	injectors := ClassifyWebhooks([]admissionv1.MutatingWebhookConfiguration{own, otelOperatorWebhook()})
+	if len(injectors) != 2 || injectors[0].Vendor != "collectorctrl" || injectors[0].Mode != ModeRequest {
+		t.Fatalf("injectors = %+v", injectors)
+	}
+	// Opted in, not yet restarted: review with a CollectorCtrl request; the
+	// upstream OTel Operator is not fooled into selecting it.
+	c := corev1.Container{Name: "app", Image: "acme/orders:1", Command: []string{"java", "-jar", "app.jar"}}
+	in := Input{Template: tmpl(c), Injectors: injectors, InjectorsChecked: true}
+	in.Template.Labels = map[string]string{LabelInstrumentJava: "canary"}
+	res := one(t, in)
+	if res.Verdict != VerdictReview || !hasCode(res, CodeInjectionRequested, "pod label "+LabelInstrumentJava) {
+		t.Fatalf("verdict %s findings %+v", res.Verdict, res.Findings)
+	}
+	if len(res.SelectedBy) != 1 || res.SelectedBy[0] != "collectorctrl-operator-java" {
+		t.Fatalf("selected by %v", res.SelectedBy)
+	}
+	// After the webhook ran: the OpenTelemetry agent is loaded and our injector
+	// selecting the pod is not a second vendor.
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: in.Template.Labels}, Spec: corev1.PodSpec{Containers: []corev1.Container{{
+		Name: "app", Env: env("JAVA_TOOL_OPTIONS", "-Xmx1g -javaagent:/collectorctrl/java/opentelemetry-javaagent.jar"),
+	}}}}
+	in.Pod = pod
+	res = one(t, in)
+	if res.Verdict != VerdictInstrumented || len(res.Agents) != 1 || res.Agents[0].Vendor != "opentelemetry" || !res.Agents[0].Injected {
+		t.Fatalf("verdict %s agents %+v findings %+v", res.Verdict, res.Agents, res.Findings)
+	}
+}

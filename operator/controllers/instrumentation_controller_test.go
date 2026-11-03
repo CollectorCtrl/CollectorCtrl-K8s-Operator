@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 CollectorCtrl
+
+package controllers
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/collectorctrl/collectorctrl/internal/instrument"
+	v1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
+)
+
+func instrumentedPod(name, mode string, restarts int32) *corev1.Pod {
+	ctrl := true
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop", UID: types.UID("uid-" + name),
+		Labels:          map[string]string{v1.LabelInstrumented: "java", v1.LabelInstrumentJava: mode, "pod-template-hash": "abc12"},
+		Annotations:     map[string]string{v1.AnnotationInstrumentation: "collectorctrl-operator/default", v1.AnnotationInstrumentationMode: mode, v1.AnnotationInstrumentationRevision: "abc12", v1.AnnotationInstrumentationStatus: "injected"},
+		OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "orders-abc12", UID: "rs-1", Controller: &ctrl}}},
+		Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "acme/orders:1"}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "app", RestartCount: restarts}}}}
+}
+
+func profileFixture(t *testing.T, objects ...client.Object) (*InstrumentationReconciler, client.Client) {
+	t.Helper()
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	_ = appsv1.AddToScheme(s)
+	_ = v1.AddToScheme(s)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).WithStatusSubresource(&v1.Instrumentation{}).Build()
+	return &InstrumentationReconciler{Client: c, Now: func() time.Time { return time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC) }}, c
+}
+
+func reconcileProfile(t *testing.T, r *InstrumentationReconciler, c client.Client) *v1.Instrumentation {
+	t.Helper()
+	key := types.NamespacedName{Namespace: "collectorctrl-operator", Name: "default"}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	out := &v1.Instrumentation{}
+	if err := c.Get(context.Background(), key, out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestInstrumentationStatusRollsUpWorkloads(t *testing.T) {
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator", Generation: 2},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}}}
+	other := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "shop"}, Spec: profile.Spec}
+	foreign := instrumentedPod("orders-abc12-z", "all", 0)
+	foreign.Annotations[v1.AnnotationInstrumentation] = "shop/other"
+	r, c := profileFixture(t, profile, other, instrumentedPod("orders-abc12-a", "all", 0), instrumentedPod("orders-abc12-b", "all", 1), foreign)
+	out := reconcileProfile(t, r, c)
+	if out.Status.PodsInstrumented != 2 || len(out.Status.Workloads) != 1 || out.Status.ObservedGeneration != 2 {
+		t.Fatalf("status %+v", out.Status)
+	}
+	w := out.Status.Workloads[0]
+	if w.Kind != "Deployment" || w.Name != "orders" || w.Revision != "abc12" || w.Mode != "all" || w.State != v1.WorkloadStateRolled || w.Pods != 2 {
+		t.Fatalf("workload %+v", w)
+	}
+	if len(out.Status.Conditions) != 1 || out.Status.Conditions[0].Status != metav1.ConditionTrue || !strings.Contains(out.Status.Conditions[0].Message, "2 pods") {
+		t.Fatalf("conditions %+v", out.Status.Conditions)
+	}
+}
+
+func TestFailingCanaryIsRevertedAndStaysReverted(t *testing.T) {
+	two := int32(2)
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}, Canary: v1.CanarySpec{MaxRestarts: &two}}}
+	canary := instrumentedPod("orders-abc12-c", "canary", 2)
+	// An uninstrumented sibling that still asks for the agent keeps the revert alive.
+	sibling := instrumentedPod("orders-abc12-s", "canary", 0)
+	delete(sibling.Labels, v1.LabelInstrumented)
+	sibling.Annotations = map[string]string{v1.AnnotationInstrumentationStatus: "skipped"}
+	r, c := profileFixture(t, profile, canary, sibling)
+
+	out := reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted || !strings.Contains(out.Status.Workloads[0].Reason, "restarted 2 times") {
+		t.Fatalf("status %+v", out.Status)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(canary), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("canary pod should have been deleted, got %v", err)
+	}
+	// The webhook consults the same status.
+	if _, ok := out.Reverted("shop", "Deployment", "orders", "abc12"); !ok {
+		t.Fatal("Reverted() does not see the record")
+	}
+	// Next reconcile: the pod is gone but the revision still has a pod asking, so the record stays.
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 1 || out.Status.Workloads[0].State != v1.WorkloadStateReverted || out.Status.Workloads[0].Pods != 0 || out.Status.PodsInstrumented != 0 {
+		t.Fatalf("status after deletion %+v", out.Status)
+	}
+	// Once the revision is gone (new rollout), the record is dropped.
+	if err := c.Delete(context.Background(), sibling); err != nil {
+		t.Fatal(err)
+	}
+	out = reconcileProfile(t, r, c)
+	if len(out.Status.Workloads) != 0 {
+		t.Fatalf("stale revert kept: %+v", out.Status.Workloads)
+	}
+}
+
+func TestAutoRevertOffKeepsPod(t *testing.T) {
+	off := false
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}, Canary: v1.CanarySpec{AutoRevert: &off}}}
+	canary := instrumentedPod("orders-abc12-c", "canary", 0)
+	canary.Status.ContainerStatuses[0].RestartCount = 1
+	canary.Status.ContainerStatuses[0].State.Waiting = &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}
+	r, c := profileFixture(t, profile, canary)
+	out := reconcileProfile(t, r, c)
+	if out.Status.Workloads[0].State != v1.WorkloadStateReverted || !strings.Contains(out.Status.Workloads[0].Reason, "crash-looping") {
+		t.Fatalf("status %+v", out.Status)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(canary), &corev1.Pod{}); err != nil {
+		t.Fatalf("pod should be kept with autoRevert=false: %v", err)
+	}
+}
+
+func TestHealthyCanaryIsNotReverted(t *testing.T) {
+	profile := &v1.Instrumentation{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "collectorctrl-operator"},
+		Spec: v1.InstrumentationSpec{Exporter: v1.ExporterSpec{Endpoint: "http://gw:4318"}}}
+	r, c := profileFixture(t, profile, instrumentedPod("orders-abc12-c", "canary", 1))
+	out := reconcileProfile(t, r, c)
+	if w := out.Status.Workloads[0]; w.State != v1.WorkloadStateCanary || w.Pods != 1 || w.Mode != "canary" {
+		t.Fatalf("%+v", w)
+	}
+	if instrument.OwnerOf(instrumentedPod("x", "canary", 0)).Name != "orders" {
+		t.Fatal("owner derivation")
+	}
+}

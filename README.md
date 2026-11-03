@@ -16,10 +16,12 @@ the configuration they run, the **role** each collector plays, how collectors ar
 **where each one sends data**. For your applications it reports **instrumentation readiness**: which APM agents
 (any vendor) already run where, which injectors would act on each pod, and which workloads could take an
 OpenTelemetry agent. Your Helm charts, vendor operators and CI/CD keep deploying and owning those workloads. The
-operator never changes them.
+operator never changes them. When you are ready, it can **add the OpenTelemetry Java agent** to the application
+workloads you opt in, one canary pod first, with your JVM flags preserved and an automatic revert.
 
-> **Status: 0.8, observation only.** The operator reads; it never writes to collector workloads, ConfigMaps or
-> application pods. See the [roadmap](#roadmap) for what comes next.
+> **Status: 0.9.** Observation is read-only: the operator never writes to collector workloads or ConfigMaps.
+> Java auto-instrumentation is off by default and opt-in per workload; it changes new pods only, through an
+> admission webhook that can never block a pod start. See the [roadmap](#roadmap) for what comes next.
 
 ---
 
@@ -30,6 +32,7 @@ operator never changes them.
 - [The opt-in journey](#the-opt-in-journey)
 - [What you see in CollectorCtrl](#what-you-see-in-collectorctrl)
 - [Instrumentation readiness](#instrumentation-readiness)
+- [Java auto-instrumentation](#java-auto-instrumentation)
 - [Quick start](#quick-start)
 - [Opt in a collector](#opt-in-a-collector)
 - [Tested collector charts](#tested-collector-charts)
@@ -203,10 +206,45 @@ admission webhook added are found in the running pod and marked *injected*.
 data is in the API and in the `k8s_instrumentation_readiness` MCP tool. When the language can't be inferred, set
 it with the `collectorctrl.io/language` annotation.
 
-**What it deliberately does not see.** The operator never contacts an image registry, so variables baked into an
-image (`ENV JAVA_TOOL_OPTIONS=...` in a Dockerfile) are invisible; every verdict says so. Values from Secrets are
-never read and are reported as unknown. Launcher values are reduced to agent paths, module names and profiler IDs;
-other flags are counted, never copied.
+**What it deliberately does not see.** The readiness report never contacts an image registry, so variables baked
+into an image (`ENV JAVA_TOOL_OPTIONS=...` in a Dockerfile) are invisible; every verdict says so. Values from
+Secrets are never read and are reported as unknown. Launcher values are reduced to agent paths, module names and
+profiler IDs; other flags are counted, never copied.
+
+## Java auto-instrumentation
+
+When a workload is *ready*, one label on its pod template adds the OpenTelemetry Java agent to its next pods:
+
+```yaml
+spec:
+  template:
+    metadata:
+      labels:
+        collectorctrl.io/instrument-java: "canary"   # one pod first; "true" for all
+```
+
+An `Instrumentation` profile (per namespace, or one `default` for the cluster) says where telemetry goes:
+
+```yaml
+apiVersion: collectorctrl.io/v1alpha1
+kind: Instrumentation
+metadata: {name: default, namespace: collectorctrl-operator}
+spec:
+  exporter: {endpoint: http://otel-agent.observability:4318}
+  canary: {maxRestarts: 3, autoRevert: true}
+```
+
+- **OpenTelemetry only, never twice.** The webhook runs the readiness analysis on every pod it sees and leaves the
+  pod alone, with a stated reason, when any vendor's agent is loaded or another injector webhook selects it.
+- **Your JVM flags stay.** `JAVA_TOOL_OPTIONS` from the pod spec or a ConfigMap is extended, not replaced. Allow the
+  registry read (`registry.readImageConfig: true`) and flags baked into the image are kept too.
+- **Canary and revert.** One pod per workload revision first. If it crash-loops, the revision is reverted, the pod
+  replaced by one without the agent, and the reason recorded. Nothing running is ever modified in place.
+- **Fails open.** The webhook is `failurePolicy: Ignore` with a 5 s timeout and always answers *allowed*; the
+  operator manages its own certificate. Off by default (`instrumentation.enabled=true` turns it on).
+
+Every decision is on the pod (`collectorctrl.io/instrumentation-status`, `-reason`) and in the readiness report.
+Read [docs/auto-instrumentation.md](docs/auto-instrumentation.md) for the rules, codes and permissions.
 
 ## Quick start
 
@@ -292,6 +330,10 @@ has created their workloads.
 - **Readiness without secrets.** The readiness report adds `list` on namespaces and mutating webhook
   configurations. It never reads Secrets or contacts registries, and sends launcher variables reduced to agent
   paths and module names. Turn it off with `readiness.enabled=false`.
+- **Auto-instrumentation is opt-in and bounded.** Off by default. When on, the operator gains `instrumentations`
+  and their status, `get` on namespaces, `delete` on pods (auto revert only), and `get`/`update` on its own webhook
+  configuration; registry credentials only for Secrets you name. It mutates new pods that carry the opt-in label,
+  never anything running, and the webhook can never block a pod start.
 - **Outbound only, verified TLS.** `wss://` only, certificate verification cannot be disabled, and the endpoint is
   pinned by the administrator. Server commands and connection changes are refused.
 - **Per-identity credentials** exchanged from the enrollment token and persisted on a dedicated volume.
@@ -314,6 +356,8 @@ The most used Helm values (full reference in [docs/configuration.md](docs/config
 | `clusterID` | `""` (kube-system UID) | Stable unique ID; required when `rbac.clusterScoped=false` |
 | `clusterObserver.enabled` | `true` | Cluster connection and candidate list |
 | `readiness.enabled` | `true` | Instrumentation readiness report (needs the cluster connection) |
+| `instrumentation.enabled` | `false` | Java auto-instrumentation webhook and `Instrumentation` profiles |
+| `instrumentation.defaultProfile.*` | not created | A `default` profile with your OTLP `exporterEndpoint` |
 | `opampCAConfigMap` | `""` | ConfigMap with `ca.crt` for a private CA |
 | `rbac.clusterScoped` | `true` | `false` limits the operator to its own namespace |
 | `credentialStorage.existingClaim` | `""` | Reuse a credential volume across reinstalls |
@@ -334,14 +378,16 @@ The most used Helm values (full reference in [docs/configuration.md](docs/config
 - **Readiness is inference from Kubernetes objects.** Image `ENV` is not checked, Secrets are not read, and agents
   baked into an image without any trace in the manifest are not seen. Workloads without a running pod cannot show
   webhook-injected agents. A *Ready* verdict means nothing visible in Kubernetes is in the way.
+- **Auto-instrumentation is Java only** in 0.9 and acts on new pods. Two pods created in the same instant can both
+  become canaries. `JAVA_TOOL_OPTIONS` from a Secret cannot be merged, so such pods are skipped with a reason.
 
 ## Roadmap
 
 | Version | Scope | State |
 | --- | --- | --- |
 | 0.7 | Label opt-in, role/stack/topology inference, cluster candidate list | Released |
-| **0.8** | Read-only instrumentation readiness: language, APM agents across vendors, injector webhooks, launcher variables to merge | **Current** |
-| 0.9 | OTel auto-instrumentation for Java through CollectorCtrl's own CRD and webhook (`failurePolicy: Ignore`), central `Instrumentation` profile, JVM flags preserved (including image `ENV`, read from the registry when you allow it), canary and revert | Planned |
+| 0.8 | Read-only instrumentation readiness: language, APM agents across vendors, injector webhooks, launcher variables to merge | Released |
+| **0.9** | OTel auto-instrumentation for Java through CollectorCtrl's own CRD and webhook (`failurePolicy: Ignore`), central `Instrumentation` profile, JVM flags preserved (including image `ENV`, read from the registry when you allow it), canary and revert | **Current** |
 | 1.0 | Node.js, Python and .NET; PRs to migrate vendor annotations | Planned |
 
 Auto-instrumentation will be **OpenTelemetry only** (upstream and OTel-based distributions), opt-in per workload,
@@ -353,7 +399,8 @@ and never injected where another agent or injector is already present.
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Components, reconcile loops, identities, wire contracts, inference rules |
 | [docs/installation.md](docs/installation.md) | Prerequisites, Helm and raw-manifest installs, private CA, OpenShift, upgrades, credentials |
-| [docs/configuration.md](docs/configuration.md) | Helm values, environment variables, labels and annotations, `CollectorMonitor` reference |
+| [docs/configuration.md](docs/configuration.md) | Helm values, environment variables, labels and annotations, `CollectorMonitor` and `Instrumentation` reference |
+| [docs/auto-instrumentation.md](docs/auto-instrumentation.md) | Java auto-instrumentation: profiles, opt-in, webhook rules, image `ENV`, canary and revert, permissions |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Symptoms, causes and fixes |
 | [docs/development.md](docs/development.md) | Building, testing, vendor-chart fixtures, releasing |
 | [docs/verifying.md](docs/verifying.md) | Verifying image and chart signatures, SBOM and provenance |

@@ -26,9 +26,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/collectorctrl/collectorctrl/internal/registry"
 	collectorctrlv1alpha1 "github.com/collectorctrl/collectorctrl/operator/api/v1alpha1"
 	"github.com/collectorctrl/collectorctrl/operator/controllers"
+	"github.com/collectorctrl/collectorctrl/operator/webhook"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -72,6 +76,21 @@ func main() {
 	if namespace != "" {
 		cacheOptions.DefaultNamespaces = map[string]cache.Config{namespace: {}}
 	}
+	// Java auto-instrumentation: pod webhook with a self-managed certificate.
+	instrumentation := os.Getenv("INSTRUMENTATION") == "true"
+	var caBundle []byte
+	webhookServer := ctrlwebhook.NewServer(ctrlwebhook.Options{Port: -1})
+	if instrumentation {
+		certDir := envOr("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs")
+		names := webhook.ServiceDNSNames(envOr("WEBHOOK_SERVICE_NAME", "collectorctrl-operator-webhook"), os.Getenv("POD_NAMESPACE"))
+		caBundle, err = webhook.GenerateCertificates(certDir, names, 365*24*time.Hour)
+		if err != nil {
+			setupLog.Error(err, "unable to generate webhook certificates")
+			os.Exit(1)
+		}
+		webhookServer = ctrlwebhook.NewServer(ctrlwebhook.Options{Port: 9443, CertDir: certDir})
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Cache:                  cacheOptions,
@@ -79,6 +98,7 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "collectorctrl.io",
+		WebhookServer:          webhookServer,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -137,8 +157,30 @@ func main() {
 			observer.ReadinessInterval = d
 		}
 		observer.ReadinessExclude = readinessExclusions(os.Getenv("READINESS_EXCLUDE_NAMESPACES"), os.Getenv("POD_NAMESPACE"))
+		observer.InstrumentationEnabled = instrumentation
 		if err := mgr.Add(observer); err != nil {
 			setupLog.Error(err, "unable to add cluster observer")
+			os.Exit(1)
+		}
+	}
+
+	if instrumentation {
+		webhookName := envOr("WEBHOOK_CONFIGURATION_NAME", "collectorctrl-operator-java")
+		injector := &webhook.PodInjector{
+			Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+			OwnWebhookName: webhookName, Registry: registry.NewReader(), Decoder: admission.NewDecoder(mgr.GetScheme()),
+		}
+		mgr.GetWebhookServer().Register(webhook.Path, &admission.Webhook{Handler: injector})
+		if err := mgr.Add(&webhook.CABundlePublisher{Reader: mgr.GetAPIReader(), Client: mgr.GetClient(), Name: webhookName, CABundle: caBundle}); err != nil {
+			setupLog.Error(err, "unable to add webhook CA publisher")
+			os.Exit(1)
+		}
+		if err := (&controllers.InstrumentationReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Instrumentation")
+			os.Exit(1)
+		}
+		if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+			setupLog.Error(err, "unable to set up webhook ready check")
 			os.Exit(1)
 		}
 	}
@@ -152,7 +194,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager", "version", version, "namespace", os.Getenv("POD_NAMESPACE"), "watchNamespace", namespace, "clusterID", clusterID)
+	setupLog.Info("starting manager", "version", version, "namespace", os.Getenv("POD_NAMESPACE"), "watchNamespace", namespace, "clusterID", clusterID, "instrumentation", instrumentation)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
@@ -176,4 +218,11 @@ func readinessExclusions(configured, own string) []string {
 		out = append(out, own)
 	}
 	return out
+}
+
+func envOr(name, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
 }

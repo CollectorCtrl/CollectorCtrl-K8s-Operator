@@ -12,6 +12,8 @@
 #   OPAMP_SERVER      required  wss:// OpAMP endpoint of your CollectorCtrl server
 #   OPAMP_CA_FILE     optional  CA bundle (PEM) if the server uses a private CA
 #   ENROLL_TOKEN      optional  cce_... token; prompted for if not set
+#   INSTRUMENTATION   optional  "true" also installs the Java auto-instrumentation
+#                               webhook (deploy/webhook.yaml) and turns it on
 # Image: ghcr.io/collectorctrl/collectorctrl-k8s-operator/operator:0.8.0 (edit deploy/deployment.yaml to change)
 
 set -euo pipefail
@@ -55,8 +57,9 @@ kubectl create secret generic collectorctrl-auth \
   --from-literal=enrollment-token="$ENROLL_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "[3/6] CRD"
+echo "[3/6] CRDs"
 kubectl apply -f deploy/crd.yaml
+kubectl apply -f deploy/crd-instrumentation.yaml
 
 echo "[4/6] RBAC"
 kubectl apply -f deploy/rbac.yaml
@@ -65,7 +68,13 @@ echo "[5/6] Credential storage (retained PVC)"
 kubectl apply -f deploy/credentials-pvc.yaml
 
 echo "[6/6] Observer deployment"
-sed "s#${PLACEHOLDER}#${OPAMP_SERVER}#" deploy/deployment.yaml | kubectl apply -f -
+if [[ "${INSTRUMENTATION:-false}" == "true" ]]; then
+  kubectl apply -f deploy/webhook.yaml
+  sed -e "s#${PLACEHOLDER}#${OPAMP_SERVER}#" -e '/name: INSTRUMENTATION$/,/value:/ s#value: "false"#value: "true"#' \
+    deploy/deployment.yaml | kubectl apply -f -
+else
+  sed "s#${PLACEHOLDER}#${OPAMP_SERVER}#" deploy/deployment.yaml | kubectl apply -f -
+fi
 
 if [[ -n "${OPAMP_CA_FILE:-}" ]]; then
   echo "Adding private CA from $OPAMP_CA_FILE"
@@ -89,3 +98,7 @@ echo "Watch the observer:   kubectl get pods -n $NAMESPACE -w"
 echo "Observer logs:        kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=collectorctrl-operator -f"
 echo "Next: edit deploy/example-collectormonitor.yaml (workload, container, opampServer"
 echo "      must equal $OPAMP_SERVER) and apply it."
+if [[ "${INSTRUMENTATION:-false}" == "true" ]]; then
+  echo "Java auto-instrumentation: edit deploy/example-instrumentation.yaml (exporter endpoint),"
+  echo "      apply it, then label a workload's pod template collectorctrl.io/instrument-java: canary"
+fi
