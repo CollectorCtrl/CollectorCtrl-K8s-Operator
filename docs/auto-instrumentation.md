@@ -164,8 +164,9 @@ instrumented pods. When a canary pod's containers restart `canary.maxRestarts` t
 - the profile's `status.workloads[]` entry becomes `state: reverted` with the reason, and the webhook skips every
   further pod of that revision (`reverted`);
 - with `canary.autoRevert: true` (default) the failing pod is deleted; its replacement starts without the agent;
-- a new revision (any change to the pod template) is tried again, and the record is dropped once no pod of the
-  reverted revision asks for the agent any more.
+- a new revision (any change to the pod template) is tried again. The record is kept for at least 15 minutes and
+  for as long as the reverted revision still exists and asks for the agent (its ReplicaSet with that pod template
+  hash, or the StatefulSet or DaemonSet); it is dropped once the revision is gone.
 
 Two pods created in the same instant can both become canaries: the webhook reads the pod cache, which can lag a
 moment behind. Set `"true"` when the canary looks good; set the label to `"false"` (or remove it) and restart the

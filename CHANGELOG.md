@@ -48,7 +48,9 @@ All notable changes to this project are documented here. The format follows
 - Canary revert is written to the profile's status (merge patch) before the failing pod is deleted, the webhook
   reads profiles from the API server rather than the cache, and a replacement pod that still received the agent
   in that window is replaced too. Previously the revert could take several cycles and the record could be lost
-  when the status update failed. A failing agent init container now counts as a failing canary.
+  when the status update failed. A failing agent init container now counts as a failing canary. Revert records are
+  tied to the workload revision (its ReplicaSet, StatefulSet or DaemonSet) with a 15-minute grace period, instead of
+  to pods, which briefly disappear between the deletion and the replacement.
 
 ### Changed
 - RBAC, only with `instrumentation.enabled=true`: `get`/`list`/`watch` on `instrumentations`, `update`/`patch` on

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -184,19 +185,55 @@ func (r *InstrumentationReconciler) rollUp(profile *v1.Instrumentation, pods []c
 	return out, reverts
 }
 
-// revisionStillRequests reports whether a pod of the reverted revision still
-// carries the opt-in label, i.e. the revert must stay in force.
+// revertGrace keeps a fresh revert record even when nothing can be seen
+// asking for the agent: the failing pod is terminating and its replacement is
+// not in the cache yet.
+const revertGrace = 15 * time.Minute
+
+// revisionStillRequests reports whether the reverted workload revision still
+// exists and asks for the agent, in which case the record must stay or the
+// next pod would be instrumented again. It decides from the owning object
+// (the ReplicaSet with that pod-template-hash, or the StatefulSet/DaemonSet),
+// not from pods, which come and go.
 func (r *InstrumentationReconciler) revisionStillRequests(w v1.InstrumentedWorkload) bool {
+	if w.LastTransition != nil && r.now().Sub(w.LastTransition.Time) < revertGrace {
+		return true
+	}
+	ctx := context.Background()
+	switch w.Kind {
+	case "Deployment":
+		var sets appsv1.ReplicaSetList
+		if err := r.List(ctx, &sets, client.InNamespace(w.Namespace), client.MatchingLabels{"pod-template-hash": w.Revision}); err != nil {
+			return true // be conservative: keep the revert
+		}
+		for i := range sets.Items {
+			rs := &sets.Items[i]
+			owner := metav1.GetControllerOf(rs)
+			if owner != nil && owner.Kind == "Deployment" && owner.Name == w.Name && instrument.ModeOf(rs.Spec.Template.Labels) != "" {
+				return true
+			}
+		}
+		return false
+	case "StatefulSet":
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: w.Namespace, Name: w.Name}, sts); err != nil {
+			return !apierrors.IsNotFound(err)
+		}
+		return instrument.ModeOf(sts.Spec.Template.Labels) != "" && (w.Revision == "" || sts.Status.UpdateRevision == w.Revision || sts.Status.CurrentRevision == w.Revision)
+	case "DaemonSet":
+		ds := &appsv1.DaemonSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: w.Namespace, Name: w.Name}, ds); err != nil {
+			return !apierrors.IsNotFound(err)
+		}
+		return instrument.ModeOf(ds.Spec.Template.Labels) != ""
+	}
+	// Other owners (ReplicaSet, Job, bare Pod): keep while a pod of it exists.
 	var pods corev1.PodList
-	if err := r.List(context.Background(), &pods, client.InNamespace(w.Namespace), client.HasLabels{v1.LabelInstrumentJava}); err != nil {
-		return true // be conservative: keep the revert
+	if err := r.List(ctx, &pods, client.InNamespace(w.Namespace), client.HasLabels{v1.LabelInstrumentJava}); err != nil {
+		return true
 	}
 	for i := range pods.Items {
-		p := &pods.Items[i]
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		o := instrument.OwnerOf(p)
+		o := instrument.OwnerOf(&pods.Items[i])
 		if o.Kind == w.Kind && o.Name == w.Name && (w.Revision == "" || o.Revision == w.Revision) {
 			return true
 		}
