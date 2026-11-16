@@ -5,6 +5,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -64,8 +66,9 @@ type ClusterObserver struct {
 	Interval    time.Duration
 	// APIReader reads cluster-scoped objects (namespaces, webhooks) uncached.
 	APIReader client.Reader
-	// ReadinessEnabled turns on the instrumentation readiness report, sent every
-	// ReadinessInterval (default 5 minutes) on the same connection.
+	// ReadinessEnabled turns on the instrumentation readiness report. It is
+	// built at every tick and sent on the same connection when its content
+	// changed, and at least every ReadinessInterval (default 5 minutes).
 	ReadinessEnabled  bool
 	ReadinessInterval time.Duration
 	ReadinessExclude  []string
@@ -74,6 +77,7 @@ type ClusterObserver struct {
 	InstrumentationEnabled bool
 	client                 *opamp.Client
 	lastReadiness          time.Time
+	lastReadinessSum       [sha256.Size]byte
 }
 
 // NeedLeaderElection keeps a single cluster connection per cluster.
@@ -96,11 +100,9 @@ func (o *ClusterObserver) Start(ctx context.Context) error {
 		if err := o.report(ctx, interval); err != nil {
 			log.Error(err, "cluster inventory not reported")
 		}
-		if o.ReadinessEnabled && time.Since(o.lastReadiness) >= o.readinessInterval() {
+		if o.ReadinessEnabled {
 			if err := o.reportReadiness(ctx); err != nil {
 				log.Error(err, "instrumentation readiness not reported")
-			} else {
-				o.lastReadiness = time.Now()
 			}
 		}
 		select {
@@ -183,11 +185,26 @@ func (o *ClusterObserver) reportReadiness(ctx context.Context) error {
 		return err
 	}
 	rep.ReportIntervalSeconds = int64(o.readinessInterval() / time.Second)
+	sum := readinessSum(rep)
+	if sum == o.lastReadinessSum && time.Since(o.lastReadiness) < o.readinessInterval() {
+		return nil // nothing changed and the server heard from us recently
+	}
 	c, err := o.ensureClient(ctx)
 	if err != nil {
 		return err
 	}
-	return c.ReportReadiness(rep)
+	if err := c.ReportReadiness(rep); err != nil {
+		return err
+	}
+	o.lastReadiness, o.lastReadinessSum = time.Now(), sum
+	return nil
+}
+
+// readinessSum identifies a report's content, ignoring when it was taken.
+func readinessSum(rep opamp.InstrumentationReadiness) [sha256.Size]byte {
+	rep.ObservedAt = time.Time{}
+	raw, _ := json.Marshal(rep)
+	return sha256.Sum256(raw)
 }
 
 // Inventory lists collector-like workloads from cached metadata and marks the

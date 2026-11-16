@@ -186,3 +186,17 @@ func TestReadinessReportsInstrumentationState(t *testing.T) {
 		t.Errorf("payload: %s", raw)
 	}
 }
+
+// A report is identified by its content, not by when it was taken.
+func TestReadinessSumIgnoresObservedAt(t *testing.T) {
+	a := opamp.InstrumentationReadiness{ClusterID: "c", ObservedAt: time.Unix(1, 0), Summary: map[string]int{"ready": 1}}
+	b := a
+	b.ObservedAt = time.Unix(999, 0)
+	if readinessSum(a) != readinessSum(b) {
+		t.Fatal("same content must give the same sum")
+	}
+	b.Summary = map[string]int{"ready": 2}
+	if readinessSum(a) == readinessSum(b) {
+		t.Fatal("changed content must give a different sum")
+	}
+}

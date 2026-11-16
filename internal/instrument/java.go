@@ -155,14 +155,16 @@ type Input struct {
 
 // Result is the decision and what to record on the pod.
 type Result struct {
-	Injected  bool
-	Code      string
-	Reason    string
-	Mode      string
+	Injected bool
+	Code     string
+	Reason   string
+	Mode     string
+	// Container names the instrumented containers, comma-separated when there
+	// are several.
 	Container string
 	Notes     []string
-	// javaToolOptions is the merged value to set when Injected.
-	javaToolOptions string
+	// javaToolOptions is the merged value to set, per instrumented container.
+	javaToolOptions map[string]string
 	// replaceConfigMapEnv is true when JAVA_TOOL_OPTIONS came from a ConfigMap
 	// key and is inlined as a literal.
 	replaceConfigMapEnv bool
@@ -221,51 +223,68 @@ func Decide(in Input) Result {
 		}
 	}
 
-	target, note, res := pickContainer(pod, containers)
+	targets, note, res := pickContainers(pod, containers)
 	if res != nil {
 		return *res
 	}
-	out := Result{Injected: true, Code: CodeInjected, Mode: mode, Container: target.Name}
+	out := Result{Injected: true, Code: CodeInjected, Mode: mode, javaToolOptions: map[string]string{}}
 	if note != "" {
 		out.Notes = append(out.Notes, note)
-	}
-	base, notes, failed := baseJavaToolOptions(pod, target, in)
-	if failed != nil {
-		return *failed
-	}
-	out.Notes = append(out.Notes, notes...)
-	for _, n := range notes {
-		if n == NoteConfigMapInlined {
-			out.replaceConfigMapEnv = true
-		}
 	}
 	flags := "-javaagent:" + AgentJar
 	if extra := strings.TrimSpace(in.Profile.Spec.Java.ExtraOptions); extra != "" {
 		flags += " " + extra
 	}
-	if base == "" {
-		out.javaToolOptions = flags
-	} else {
-		out.javaToolOptions = strings.TrimSpace(base) + " " + flags
+	seen := map[string]bool{}
+	picked := make([]string, 0, len(targets))
+	for _, target := range targets {
+		// One container that cannot be instrumented safely skips the whole
+		// pod: a half-instrumented pod would look like a success.
+		base, notes, failed := baseJavaToolOptions(pod, target, in)
+		if failed != nil {
+			return *failed
+		}
+		for _, n := range notes {
+			if !seen[n] {
+				seen[n] = true
+				out.Notes = append(out.Notes, n)
+			}
+			if n == NoteConfigMapInlined {
+				out.replaceConfigMapEnv = true
+			}
+		}
+		out.javaToolOptions[target.Name] = strings.TrimSpace(strings.TrimSpace(base) + " " + flags)
+		picked = append(picked, target.Name)
 	}
-	out.Reason = "OpenTelemetry Java agent added to container " + target.Name
+	out.Container = strings.Join(picked, ", ")
+	if len(picked) > 1 {
+		out.Reason = "OpenTelemetry Java agent added to containers " + out.Container
+	} else {
+		out.Reason = "OpenTelemetry Java agent added to container " + out.Container
+	}
 	return out
 }
 
-// pickContainer chooses the application container: the annotated one, else
-// the single Java container, else the single application container.
-func pickContainer(pod *corev1.Pod, analysed []readiness.Container) (corev1.Container, string, *Result) {
+// pickContainers chooses the application containers: the annotated ones
+// (one name, or several separated by commas), else every Java container,
+// else the single application container.
+func pickContainers(pod *corev1.Pod, analysed []readiness.Container) ([]corev1.Container, string, *Result) {
 	byName := map[string]corev1.Container{}
 	for _, c := range pod.Spec.Containers {
 		byName[c.Name] = c
 	}
-	if want := strings.TrimSpace(pod.Annotations[v1.AnnotationInstrumentContainer]); want != "" {
-		c, ok := byName[want]
-		if !ok {
-			r := skip(CodeContainerNotFound, fmt.Sprintf("container %q named in %s does not exist", want, v1.AnnotationInstrumentContainer))
-			return corev1.Container{}, "", &r
+	if raw := strings.TrimSpace(pod.Annotations[v1.AnnotationInstrumentContainer]); raw != "" {
+		var out []corev1.Container
+		for _, want := range strings.Split(raw, ",") {
+			want = strings.TrimSpace(want)
+			c, ok := byName[want]
+			if !ok {
+				r := skip(CodeContainerNotFound, fmt.Sprintf("container %q named in %s does not exist", want, v1.AnnotationInstrumentContainer))
+				return nil, "", &r
+			}
+			out = append(out, c)
 		}
-		return c, "", nil
+		return out, "", nil
 	}
 	var java, other []readiness.Container
 	for _, c := range analysed {
@@ -277,16 +296,19 @@ func pickContainer(pod *corev1.Pod, analysed []readiness.Container) (corev1.Cont
 		}
 	}
 	switch {
-	case len(java) == 1:
-		return byName[java[0].Name], "", nil
-	case len(java) > 1:
-		r := skip(CodeContainerAmbiguous, fmt.Sprintf("%d Java containers (%s); name one with %s", len(java), names(java), v1.AnnotationInstrumentContainer))
-		return corev1.Container{}, "", &r
+	case len(java) > 0:
+		// Every Java container is an application worth instrumenting; the
+		// annotation narrows it down when only some are wanted.
+		out := make([]corev1.Container, 0, len(java))
+		for _, c := range java {
+			out = append(out, byName[c.Name])
+		}
+		return out, "", nil
 	case len(other) == 1 && len(analysed) == 1:
-		return byName[other[0].Name], NoteLanguageAssumed, nil
+		return []corev1.Container{byName[other[0].Name]}, NoteLanguageAssumed, nil
 	case len(other) > 1:
 		r := skip(CodeContainerAmbiguous, fmt.Sprintf("%d containers of unknown language (%s); name one with %s", len(other), names(other), v1.AnnotationInstrumentContainer))
-		return corev1.Container{}, "", &r
+		return nil, "", &r
 	}
 	langs := make([]string, 0, len(analysed))
 	for _, c := range analysed {
@@ -294,10 +316,10 @@ func pickContainer(pod *corev1.Pod, analysed []readiness.Container) (corev1.Cont
 	}
 	if len(analysed) == 0 {
 		r := skip(CodeNotJava, "no application container (only infrastructure images)")
-		return corev1.Container{}, "", &r
+		return nil, "", &r
 	}
 	r := skip(CodeNotJava, "no Java container found ("+strings.Join(langs, ", ")+"); set "+v1.AnnotationInstrumentContainer+" or "+readiness.AnnotationLanguage)
-	return corev1.Container{}, "", &r
+	return nil, "", &r
 }
 
 func names(cs []readiness.Container) string {
@@ -419,13 +441,13 @@ func Apply(pod *corev1.Pod, in Input, res Result) {
 		limit := resource.MustParse("256Mi")
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: VolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &limit}}})
 	}
-	var target *corev1.Container
+	var targets []*corev1.Container
 	for i := range pod.Spec.Containers {
-		if pod.Spec.Containers[i].Name == res.Container {
-			target = &pod.Spec.Containers[i]
+		if _, ok := res.javaToolOptions[pod.Spec.Containers[i].Name]; ok {
+			targets = append(targets, &pod.Spec.Containers[i])
 		}
 	}
-	if target == nil {
+	if len(targets) == 0 {
 		return
 	}
 	image := profile.Spec.Java.Image
@@ -438,8 +460,8 @@ func Apply(pod *corev1.Pod, in Input, res Result) {
 		VolumeMounts: []corev1.VolumeMount{{Name: VolumeName, MountPath: MountPath}},
 		Resources:    initResources(profile.Spec.Java.Resources),
 	}
-	if target.SecurityContext != nil {
-		init.SecurityContext = target.SecurityContext.DeepCopy()
+	if sc := targets[0].SecurityContext; sc != nil {
+		init.SecurityContext = sc.DeepCopy()
 	}
 	hasInit := false
 	for _, ic := range pod.Spec.InitContainers {
@@ -451,42 +473,45 @@ func Apply(pod *corev1.Pod, in Input, res Result) {
 		pod.Spec.InitContainers = append(pod.Spec.InitContainers, init)
 	}
 
-	// The application container: mount, launcher flag, OTel settings.
-	hasMount := false
-	for _, m := range target.VolumeMounts {
-		if m.Name == VolumeName {
-			hasMount = true
+	// Each application container: mount, launcher flag, OTel settings.
+	for _, target := range targets {
+		opts := res.javaToolOptions[target.Name]
+		hasMount := false
+		for _, m := range target.VolumeMounts {
+			if m.Name == VolumeName {
+				hasMount = true
+			}
 		}
-	}
-	if !hasMount {
-		target.VolumeMounts = append(target.VolumeMounts, corev1.VolumeMount{Name: VolumeName, MountPath: MountPath, ReadOnly: true})
-	}
-	set := false
-	for i := range target.Env {
-		if target.Env[i].Name == "JAVA_TOOL_OPTIONS" {
-			target.Env[i] = corev1.EnvVar{Name: "JAVA_TOOL_OPTIONS", Value: res.javaToolOptions}
-			set = true
+		if !hasMount {
+			target.VolumeMounts = append(target.VolumeMounts, corev1.VolumeMount{Name: VolumeName, MountPath: MountPath, ReadOnly: true})
 		}
-	}
-	if !set {
-		target.Env = append(target.Env, corev1.EnvVar{Name: "JAVA_TOOL_OPTIONS", Value: res.javaToolOptions})
-	}
+		set := false
+		for i := range target.Env {
+			if target.Env[i].Name == "JAVA_TOOL_OPTIONS" {
+				target.Env[i] = corev1.EnvVar{Name: "JAVA_TOOL_OPTIONS", Value: opts}
+				set = true
+			}
+		}
+		if !set {
+			target.Env = append(target.Env, corev1.EnvVar{Name: "JAVA_TOOL_OPTIONS", Value: opts})
+		}
 
-	defaults := otelEnv(in, res.Container)
-	have := map[string]bool{}
-	for _, e := range target.Env {
-		have[e.Name] = true
-	}
-	for _, e := range defaults {
-		if !have[e.Name] {
-			target.Env = append(target.Env, e)
+		defaults := otelEnv(in, target.Name, len(targets) > 1)
+		have := map[string]bool{}
+		for _, e := range target.Env {
 			have[e.Name] = true
 		}
-	}
-	for _, e := range profile.Spec.Env {
-		if !have[e.Name] {
-			target.Env = append(target.Env, *e.DeepCopy())
-			have[e.Name] = true
+		for _, e := range defaults {
+			if !have[e.Name] {
+				target.Env = append(target.Env, e)
+				have[e.Name] = true
+			}
+		}
+		for _, e := range profile.Spec.Env {
+			if !have[e.Name] {
+				target.Env = append(target.Env, *e.DeepCopy())
+				have[e.Name] = true
+			}
 		}
 	}
 }
@@ -503,17 +528,24 @@ func initResources(r corev1.ResourceRequirements) corev1.ResourceRequirements {
 
 // otelEnv builds the SDK settings: exporter, service name, resource
 // attributes (Kubernetes first, then the profile's), propagators, sampler.
-func otelEnv(in Input, container string) []corev1.EnvVar {
+//
+// shared is true when several containers of the pod are instrumented: each
+// then reports as its own service, named after the workload and the container.
+func otelEnv(in Input, container string, shared bool) []corev1.EnvVar {
 	spec := in.Profile.Spec
 	protocol := spec.Exporter.Protocol
 	if protocol == "" {
 		protocol = "http/protobuf"
 	}
+	service := in.Workload.Name
+	if shared {
+		service += "-" + container
+	}
 	out := []corev1.EnvVar{
 		{Name: podNameEnv, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: spec.Exporter.Endpoint},
 		{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: protocol},
-		{Name: "OTEL_SERVICE_NAME", Value: in.Workload.Name},
+		{Name: "OTEL_SERVICE_NAME", Value: service},
 	}
 	attrs := []string{
 		"k8s.namespace.name=" + in.Namespace,

@@ -91,7 +91,7 @@ Optional pod template annotations:
 | Annotation | Purpose |
 | --- | --- |
 | `collectorctrl.io/instrumentation` | Profile to use (`name` or `namespace/name`) |
-| `collectorctrl.io/instrument-container` | Which container, when the pod has more than one application container |
+| `collectorctrl.io/instrument-container` | Which container or containers (comma-separated). Not needed for Java containers the operator recognises: all of them are instrumented |
 | `collectorctrl.io/language: java` | Settles the language when the operator cannot infer it (also read by readiness) |
 | `collectorctrl.io/instrument-force: "true"` | Proceed although `envFrom` references a Secret that might set `JAVA_TOOL_OPTIONS` |
 
@@ -111,9 +111,10 @@ For a new pod with the label, in this order:
 5. **Other agents.** The same analysis as the readiness report runs on the pod. Any APM agent (javaagent flag,
    init container, preload library, profiler, ...) of any vendor: skip (`agent_present`). Any other injector webhook
    whose selectors match the pod: skip (`injector_present`).
-6. **Container.** The annotated container, else the single Java container, else the single application container
-   (noted as `language_assumed`). Two candidates: skip (`container_ambiguous`). A Node.js, Python, .NET or Go
-   container only: skip (`not_java`).
+6. **Container.** The annotated containers (one name, or several separated by commas), else every Java container,
+   else the single application container (noted as `language_assumed`). Several containers of unknown language:
+   skip (`container_ambiguous`). A Node.js, Python, .NET or Go container only: skip (`not_java`). When several
+   containers of a pod are instrumented, each reports as its own service, `<workload>-<container>`.
 7. **Launcher.** The `JAVA_TOOL_OPTIONS` the process would have had is found: a literal value, a ConfigMap key (read
    and inlined), an `envFrom` ConfigMap, else the image configuration when the registry read is allowed. A value
    from a Secret, a field or resource reference, or an `envFrom` Secret without `instrument-force`: skip

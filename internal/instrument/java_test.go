@@ -383,3 +383,55 @@ func TestSecondPassLeavesInjectedPodAlone(t *testing.T) {
 		t.Fatal("AlreadyInjected")
 	}
 }
+
+// Several Java containers: all are instrumented, each as its own service;
+// the annotation narrows it down to the named ones.
+func TestEveryJavaContainerIsInstrumented(t *testing.T) {
+	pod := javaPod()
+	pod.Spec.Containers = []corev1.Container{
+		{Name: "auth", Image: "nginx:1.27"},
+		{Name: "gateway", Image: "acme/gateway:1", Command: []string{"java", "-jar", "/gw.jar"}, Env: []corev1.EnvVar{{Name: "JAVA_TOOL_OPTIONS", Value: "-Xmx256m"}}},
+		{Name: "orders", Image: "acme/orders:2", Command: []string{"java", "-jar", "/app.jar"}},
+	}
+	in := input(pod)
+	res := Decide(in)
+	if !res.Injected || res.Container != "gateway, orders" {
+		t.Fatalf("both Java containers: %+v", res)
+	}
+	Apply(pod, in, res)
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("one agent init container expected, got %d", len(pod.Spec.InitContainers))
+	}
+	auth, gateway, orders := pod.Spec.Containers[0], pod.Spec.Containers[1], pod.Spec.Containers[2]
+	if envValue(auth, "JAVA_TOOL_OPTIONS") != "" || len(auth.VolumeMounts) != 0 {
+		t.Fatalf("the non-Java container must stay untouched: %+v", auth)
+	}
+	if got := envValue(gateway, "JAVA_TOOL_OPTIONS"); got != "-Xmx256m -javaagent:"+AgentJar {
+		t.Fatalf("gateway keeps its own flags: %q", got)
+	}
+	if got := envValue(orders, "JAVA_TOOL_OPTIONS"); got != "-javaagent:"+AgentJar {
+		t.Fatalf("orders: %q", got)
+	}
+	gs, os := envValue(gateway, "OTEL_SERVICE_NAME"), envValue(orders, "OTEL_SERVICE_NAME")
+	if gs == os || !strings.HasSuffix(gs, "-gateway") || !strings.HasSuffix(os, "-orders") {
+		t.Fatalf("each container reports as its own service: %q %q", gs, os)
+	}
+
+	// Named: only that container.
+	pod = javaPod()
+	pod.Spec.Containers = []corev1.Container{
+		{Name: "gateway", Image: "acme/gateway:1", Command: []string{"java", "-jar", "/gw.jar"}},
+		{Name: "orders", Image: "acme/orders:2", Command: []string{"java", "-jar", "/app.jar"}},
+	}
+	pod.Annotations = map[string]string{v1.AnnotationInstrumentContainer: "orders"}
+	in = input(pod)
+	res = Decide(in)
+	Apply(pod, in, res)
+	if res.Container != "orders" || envValue(pod.Spec.Containers[0], "JAVA_TOOL_OPTIONS") != "" {
+		t.Fatalf("annotation narrows: %+v", res)
+	}
+	// A single instrumented container keeps the workload's name as its service.
+	if got := envValue(pod.Spec.Containers[1], "OTEL_SERVICE_NAME"); strings.HasSuffix(got, "-orders") {
+		t.Fatalf("single container service name changed: %q", got)
+	}
+}

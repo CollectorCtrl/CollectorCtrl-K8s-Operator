@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Pods with several Java containers are instrumented without an annotation.** Every container recognised as Java
+  gets the agent and reports as its own service (`<workload>-<container>`); before, such a pod was skipped as
+  `container_ambiguous`. `collectorctrl.io/instrument-container` narrows it down and now accepts several names
+  separated by commas. Several containers of unknown language are still skipped until one is named.
+- **The readiness report is sent when it changes.** It is built at every observer tick (one minute by default) and
+  sent when its content differs from the last one sent, and at least every `READINESS_INTERVAL` (5 minutes) as a
+  heartbeat, on the existing cluster connection. Status changes reach CollectorCtrl within about a minute.
+
 ## [0.9.0] - 2026-11-03
 
 ### Added
