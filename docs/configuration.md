@@ -117,7 +117,7 @@ the pod; see [auto-instrumentation.md](auto-instrumentation.md).
 | annotation `collectorctrl.io/instrumentation` | `name` or `namespace/name` | Profile to use (default: the namespace's single profile, else `default` in the operator namespace) |
 | annotation `collectorctrl.io/instrument-container` | container name | Which container, when several application containers exist |
 | annotation `collectorctrl.io/instrument-force` | `"true"` | Proceed although `envFrom` names a Secret that could set `JAVA_TOOL_OPTIONS` |
-| annotation `collectorctrl.io/language` | `java` | Settles the language for the webhook when it cannot be inferred (on the template; the workload-level copy is read by readiness only) |
+| annotation `collectorctrl.io/language` | `java` | Settles the language for the webhook when it cannot be inferred (on the workload or on the pod template; the template wins) |
 
 The webhook writes back `collectorctrl.io/instrumentation-status` (`injected` or `skipped`),
 `collectorctrl.io/instrumentation-reason`, `collectorctrl.io/instrumentation-mode` and the label

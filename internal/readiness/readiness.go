@@ -145,8 +145,8 @@ type Input struct {
 	// NamespaceLabels and NamespaceAnnotations of the workload's namespace.
 	NamespaceLabels      map[string]string
 	NamespaceAnnotations map[string]string
-	// WorkloadAnnotations are the workload's own annotations (not the pod
-	// template's), for overrides such as collectorctrl.io/language.
+	// WorkloadAnnotations are the workload's own annotations, for overrides
+	// such as collectorctrl.io/language (also read from the pod template).
 	WorkloadAnnotations map[string]string
 	// Injectors are the pod-mutating webhooks found in the cluster.
 	Injectors []Injector
@@ -298,8 +298,12 @@ func analyzeContainer(in Input, c corev1.Container) Container {
 	}
 
 	res.Language, res.LanguageSource = detectLanguage(c, tmpl, res.Agents)
-	if lang, ok := languageOverride(in.WorkloadAnnotations, c.Name); ok {
-		res.Language, res.LanguageSource = lang, "annotation"
+	// Read from the workload and from the pod template (the template wins),
+	// here and in the webhook, so the report and the webhook always agree.
+	for _, ann := range []map[string]string{in.WorkloadAnnotations, in.Template.Annotations} {
+		if lang, ok := languageOverride(ann, c.Name); ok {
+			res.Language, res.LanguageSource = lang, "annotation"
+		}
 	}
 
 	if in.InjectorsChecked {

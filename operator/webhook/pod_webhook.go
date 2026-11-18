@@ -15,6 +15,7 @@ import (
 	"time"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -77,6 +78,7 @@ func (h *PodInjector) Handle(ctx context.Context, req admission.Request) admissi
 		return admission.Allowed("not opted in")
 	}
 	in := instrument.Input{Pod: pod, Namespace: req.Namespace, Workload: instrument.OwnerOf(pod), InjectorsChecked: true}
+	in.WorkloadAnnotations = h.workloadAnnotations(ctx, req.Namespace, in.Workload)
 	in.Profile = h.profile(ctx, req.Namespace, pod.Annotations)
 	in.NamespaceLabels = h.namespaceLabels(ctx, req.Namespace)
 	in.Injectors, in.InjectorsChecked = h.otherInjectors(ctx)
@@ -155,6 +157,26 @@ func (h *PodInjector) profile(ctx context.Context, namespace string, annotations
 		return nil
 	}
 	return p
+}
+
+// workloadAnnotations reads the owning workload's annotations (the console's
+// "kubectl annotate deployment/..." lands there, not on the pod).
+func (h *PodInjector) workloadAnnotations(ctx context.Context, namespace string, w instrument.Workload) map[string]string {
+	var obj client.Object
+	switch w.Kind {
+	case "Deployment":
+		obj = &appsv1.Deployment{}
+	case "StatefulSet":
+		obj = &appsv1.StatefulSet{}
+	case "DaemonSet":
+		obj = &appsv1.DaemonSet{}
+	default:
+		return nil
+	}
+	if err := h.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: w.Name}, obj); err != nil {
+		return nil
+	}
+	return obj.GetAnnotations()
 }
 
 func (h *PodInjector) namespaceLabels(ctx context.Context, namespace string) map[string]string {

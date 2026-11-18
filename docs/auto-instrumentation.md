@@ -190,7 +190,8 @@ workloads, ConfigMaps or other Secrets. The kind end-to-end test checks exactly 
 - Java only in 0.9; Node.js, Python and .NET follow in 1.0.
 - `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS` are left as they are (the JVM reads them in addition).
 - Image configuration is read for the `linux/amd64` manifest (or the first Linux one) of a multi-architecture image.
-- The webhook decides from the pod and its namespace. Workload-level annotations such as `collectorctrl.io/language`
-  must be on the pod template to be seen by the webhook (the readiness report reads both).
+- The webhook decides from the pod and its namespace, plus the `collectorctrl.io/language` annotation of the owning
+  Deployment, StatefulSet or DaemonSet. Other workload-level annotations
+  must be on the pod template to be seen by the webhook.
 - Namespace-scoped installs (`rbac.clusterScoped=false`) instrument pods in the release namespace only, because the
   operator only sees that namespace; the webhook configuration is still cluster-scoped.

@@ -139,7 +139,10 @@ type Input struct {
 	Pod       *corev1.Pod
 	Namespace string // from the admission request; pod.Namespace may be empty
 	Workload  Workload
-	Profile   *v1.Instrumentation // nil when none applies
+	// WorkloadAnnotations are the owning workload's annotations; nil when it
+	// could not be read.
+	WorkloadAnnotations map[string]string
+	Profile             *v1.Instrumentation // nil when none applies
 	// CanaryTaken is true when another instrumented pod of this workload
 	// revision already exists.
 	CanaryTaken bool
@@ -210,7 +213,7 @@ func Decide(in Input) Result {
 
 	tmpl := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: pod.Labels, Annotations: pod.Annotations}, Spec: pod.Spec}
 	containers := readiness.Analyze(readiness.Input{
-		Template: tmpl, WorkloadAnnotations: pod.Annotations, NamespaceLabels: in.NamespaceLabels,
+		Template: tmpl, WorkloadAnnotations: in.WorkloadAnnotations, NamespaceLabels: in.NamespaceLabels,
 		Injectors: in.Injectors, InjectorsChecked: in.InjectorsChecked, Lookup: in.Lookup, LookupAll: in.LookupAll,
 	})
 	for _, c := range containers {

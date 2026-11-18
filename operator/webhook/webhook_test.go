@@ -15,6 +15,7 @@ import (
 
 	admissionreq "k8s.io/api/admission/v1"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +31,7 @@ func scheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
 	_ = admissionv1.AddToScheme(s)
+	_ = appsv1.AddToScheme(s)
 	_ = v1.AddToScheme(s)
 	return s
 }
@@ -281,5 +283,25 @@ func TestWebhookReinvocationIsANoOp(t *testing.T) {
 	second := h.Handle(context.Background(), request(t, mutated))
 	if !second.Allowed || len(second.Patches) != 0 {
 		t.Fatalf("re-invocation must not patch: %+v", second)
+	}
+}
+
+// "kubectl annotate deployment/orders collectorctrl.io/language=java" (what the
+// console suggests) must be enough for the webhook, not only for the report.
+func TestWebhookReadsTheLanguageFromTheWorkload(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}
+	unknown := func() *corev1.Pod {
+		pod := optedInPod("true")
+		pod.Spec.Containers = []corev1.Container{{Name: "app", Image: "acme/orders:1"}, {Name: "worker", Image: "acme/worker:1"}}
+		return pod
+	}
+	pod := unknown()
+	if out := patchedPod(t, injector(t, defaultProfile(), ns).Handle(context.Background(), request(t, pod)), pod); len(out.Spec.InitContainers) != 0 {
+		t.Fatalf("containers of unknown language were instrumented")
+	}
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "orders", Namespace: "shop", Annotations: map[string]string{"collectorctrl.io/language": "app=java"}}}
+	pod = unknown()
+	if out := patchedPod(t, injector(t, defaultProfile(), ns, dep).Handle(context.Background(), request(t, pod)), pod); len(out.Spec.InitContainers) != 1 {
+		t.Fatalf("the workload's language annotation was not used: %v", out.Annotations)
 	}
 }

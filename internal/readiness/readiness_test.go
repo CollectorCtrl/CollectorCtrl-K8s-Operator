@@ -438,3 +438,12 @@ func TestOTelEnvIsReportedWithRedaction(t *testing.T) {
 		t.Fatalf("credential in payload: %s", raw)
 	}
 }
+
+func TestLanguageAnnotationOnThePodTemplateWins(t *testing.T) {
+	template := tmpl(corev1.Container{Name: "app", Image: "acme/app"})
+	template.Annotations = map[string]string{AnnotationLanguage: "java"}
+	got := one(t, Input{Template: template, WorkloadAnnotations: map[string]string{AnnotationLanguage: "python"}})
+	if got.Language != LangJava || got.LanguageSource != "annotation" {
+		t.Errorf("got %s from %s", got.Language, got.LanguageSource)
+	}
+}
