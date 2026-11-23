@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Build stage: reproducible build from go.mod/go.sum (no network tidy).
 # Base images are pinned by digest; Dependabot keeps tag and digest current.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o manager ./cmd/operator
 
 # Runtime: distroless, non-root, no shell.
-FROM gcr.io/distroless/static:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
+FROM gcr.io/distroless/static:nonroot@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5
 LABEL org.opencontainers.image.title="CollectorCtrl Kubernetes Operator" \
       org.opencontainers.image.description="Observes OpenTelemetry Collector workloads in Kubernetes and reports them to CollectorCtrl over OpAMP" \
       org.opencontainers.image.source="https://github.com/CollectorCtrl/CollectorCtrl-K8s-Operator" \
